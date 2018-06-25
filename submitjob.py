@@ -8,7 +8,6 @@ CWD = os.getcwd()
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 PATH = os.getenv('PATH')
 
-
 def _sanitize_cmd(bit):
     if "'" in bit and not re.match("^($|'|\")", bit):
         return '"%s"' % (bit,)
@@ -22,7 +21,8 @@ def _sanitize_cmd(bit):
     return bit
 
 
-def submit(cmd, walltime=24, memory=2, cpu=1, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None):
+
+def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
@@ -37,6 +37,8 @@ def submit(cmd, walltime=24, memory=2, cpu=1, wd=CWD, output_dir=PBS_OUTPUT, pat
     :type walltime: float
     :type memory: float
     :type cpu: int
+    :type disable_email: boolean
+    :type email: str
     :type wd: str
     :type output_dir: str
     :type path: str
@@ -45,9 +47,13 @@ def submit(cmd, walltime=24, memory=2, cpu=1, wd=CWD, output_dir=PBS_OUTPUT, pat
     :rtype: str
     """
     walltime = '%02d:%02d:00' % (walltime, 60 * (walltime % 1))
-    memory = '%dM' % (1024 * memory,)
+    memory = '%dM' % (1024 * mem,)
     cpu = '%d' % (cpu,)
-
+    email = '%s' % (email)
+    send_email = 'ae'
+    if email==None:
+        send_email='n'
+    
     resources = ['walltime=%s' % (walltime,), 'mem=%s' % (memory,), 'nodes=1:ppn=%s' % (cpu,)]
     resources = ','.join(resources)
 
@@ -66,7 +72,8 @@ def submit(cmd, walltime=24, memory=2, cpu=1, wd=CWD, output_dir=PBS_OUTPUT, pat
 #PBS -o localhost:{pbs_output}
 #PBS -j oe
 #PBS -l {resources}
-#PBS -m a
+#PBS -m {send_email}
+#PBS -M {email}
 #PBS -r n
 #PBS -V
 #PBS -N {name}
@@ -83,6 +90,8 @@ echo    '==> Execution host :' `hostname`
         cwd=wd,
         path=path,
         cpu=cpu,
+        send_email=send_email,
+        email=email,
         cmd_echo=cmd_echo,
         cmd=cmd
     )
@@ -119,6 +128,8 @@ def main():
     parser.add_argument('-L', '-log-path', '--log-path', default=os.path.join(HOME, '.pbs_log'),
                         type=argparse.FileType('a'),
                         help='Write a log of submitted jobs.')
+    parser.add_argument('-E', '-email', '--email', type=str, default=None,
+                        help='Email address to send to when job ends or aborts')
 
     args = parser.parse_args()
 
@@ -137,7 +148,7 @@ def main():
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
 
-        job_id = submit(cmd, args.walltime, args.mem, args.cpu)
+        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email)
         print(prefix + job_id)
 
         if not args.disable_log:
