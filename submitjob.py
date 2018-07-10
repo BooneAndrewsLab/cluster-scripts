@@ -4,9 +4,10 @@ import time
 from subprocess import Popen, PIPE
 
 HOME = os.getenv("HOME")
+PATH = os.getenv('PATH')
 CWD = os.getcwd()
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
-PATH = os.getenv('PATH')
+
 
 def _sanitize_cmd(bit):
     if "'" in bit and not re.match("^($|'|\")", bit):
@@ -21,23 +22,22 @@ def _sanitize_cmd(bit):
     return bit
 
 
-
 def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
     :param walltime: Requested run-time limit in hours. Default 24hrs.
-    :param memory: Requested memory limit in GB. Default 2GB.
+    :param mem: Requested memory limit in GB. Default 2GB.
     :param cpu: Requested number of CPU. Default 1 CPU.
+    :param email: Email address for notifications.
     :param wd: Working directory. Default is cwd().
     :param output_dir: Where to save job output. Default is $HOME/pbs-output
     :param path: Job's PATH. Default is $PATH.
     :param job_name: Name of the job as displayed by qstat. Default is command name, ie: awk
     :type cmd: str
     :type walltime: float
-    :type memory: float
+    :type mem: float
     :type cpu: int
-    :type disable_email: boolean
     :type email: str
     :type wd: str
     :type output_dir: str
@@ -49,11 +49,11 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     walltime = '%02d:%02d:00' % (walltime, 60 * (walltime % 1))
     memory = '%dM' % (1024 * mem,)
     cpu = '%d' % (cpu,)
-    email = '%s' % (email)
     send_email = 'ae'
-    if email==None:
-        send_email='n'
-    
+
+    if not email:
+        send_email = 'n'
+
     resources = ['walltime=%s' % (walltime,), 'mem=%s' % (memory,), 'nodes=1:ppn=%s' % (cpu,)]
     resources = ','.join(resources)
 
@@ -144,6 +144,9 @@ def main():
     elif args.file:
         for command in args.file:
             commands.append(' '.join(map(_sanitize_cmd, command)))
+
+    if args.email and len(commands) > 10:
+        parser.error("Sending email is not supported when submitting more than 10 jobs in a batch")
 
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
