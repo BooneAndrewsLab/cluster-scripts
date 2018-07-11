@@ -12,12 +12,12 @@ None
 
 # Examples
 
-submit <command> with all default settings:
+submit _\<command\>_ with all default settings:
 ```sh
 $ python submitjob.py <command>
 ```
 
-submit <command> with defined wall-time, memory and cpu (fractions supported):
+submit _\<command\>_ with defined wall-time, memory and cpu (fractions supported):
 ```sh
 $ python submitjob.py -w 24.5 -m 2.5 -c 2 <command>
 ```
@@ -27,7 +27,7 @@ submit each line in _batch_file.txt_ as a separate command
 $ python submitjob.py -f batch_file.txt
 ```
 
-submit <command> and receive an email when job is aborted or finished
+submit _\<command\>_ and receive an email when job is aborted or finished
 ```sh
 $ python submitjob.py -E m.usaj@utoronto.ca <command>
 ```
