@@ -126,12 +126,12 @@ def main():
                         help='Read commands from a file, one per line. If a "command" is specified as a positional '
                              'argument this will be ignored.')
     parser.add_argument('-l', '-disable-log', '--disable-log', action='store_true',
-                        help='Write a log of submitted jobs to "log-path".')
+                        help='Disable job logging.')
     parser.add_argument('-L', '-log-path', '--log-path', default=os.path.join(HOME, '.pbs_log'),
                         type=argparse.FileType('a'),
-                        help='Write a log of submitted jobs.')
+                        help='Where to log submitted jobs.')
     parser.add_argument('-E', '-email', '--email', type=str, default=None,
-                        help='Email address to send to when job ends or aborts')
+                        help='Send an email to this address when a job ends or is aborted')
 
     args = parser.parse_args()
 
