@@ -111,7 +111,7 @@ def main():
                         help='The maximum amount of memory used by the job in Gb.')
     parser.add_argument('-c', '-cpu', '--cpu', type=int, default=1,
                         help='The number of CPUs required on a single node.')
-    parser.add_argument('-f', '-file', '--file', type=argparse.FileType('r'),
+    parser.add_argument('-f', '-file', '--file', type=argparse.FileType('rU'),
                         help='Read commands from a file, one per line. If a "command" is specified as a positional '
                              'argument this will be ignored.')
     parser.add_argument('-l', '-disable-log', '--disable-log', action='store_true',
@@ -131,8 +131,7 @@ def main():
         # single command takes precedence
         commands.append(' '.join(map(_sanitize_cmd, args.command)))
     elif args.file:
-        for command in args.file:
-            commands.append(' '.join(map(_sanitize_cmd, command)))
+        commands = [c.strip() for c in args.file]
 
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
