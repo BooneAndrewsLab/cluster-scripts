@@ -117,11 +117,11 @@ def main():
                         help='The command to run on the cluster. Note that any output redirection or pipe symbols '
                              'must be escaped, i.e.   \\> or \\|')
     parser.add_argument('-w', '-walltime', '--walltime', type=float, default=24,
-                        help='The expected run time of the job, measured in hours.')
+                        help='The expected run time in hours, default 24.')
     parser.add_argument('-m', '-mem', '--mem', type=float, default=2,
-                        help='The maximum amount of memory used by the job in Gb.')
+                        help='Max amount of memory to be used in Gb, default 2.')
     parser.add_argument('-c', '-cpu', '--cpu', type=int, default=1,
-                        help='The number of CPUs required on a single node.')
+                        help='Number of CPUs required on a single node, default 1.')
     parser.add_argument('-f', '-file', '--file', type=argparse.FileType('rU'),
                         help='Read commands from a file, one per line. If a "command" is specified as a positional '
                              'argument this will be ignored.')
