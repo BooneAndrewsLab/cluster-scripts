@@ -10,27 +10,21 @@ HOME = os.getenv("HOME")
 USER = os.getenv("USER")
 
 LOG_PATH = os.path.join(HOME, '.pbs_log')
+PBS_PATH = os.path.join(HOME, 'pbs-output')
 USER_LABEL = '*%s' % (USER,)
-
-OUTPUT_MAP = {
-    'Run command': 'cmd',
-    'Execution host': 'host',
-    'Resources used': 'resources',
-    'Exit status': 'exit'
-}
 
 
 def read_output():
     res = {}
 
-    for out in os.listdir(os.path.join(HOME, 'pbs-output')):
+    for out in os.listdir(PBS_PATH):
         if not out.endswith('.bc.ccbr.utoronto.ca.OU'):
             continue
 
         job_id = out[:11]
 
         out_data = {}
-        with open(os.path.join(HOME, 'pbs-output', out)) as fin:
+        with open(os.path.join(PBS_PATH, out)) as fin:
             for line in fin:
                 if line.startswith('==>'):
                     param, val = line[4:].strip().split(':', 1)
@@ -58,47 +52,55 @@ def read_log():
     return res
 
 
-def get_active_jobs(mine=False):
+def get_my_jobs():
+    proc = Popen('qstat -a -u %s' % (USER, ), shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+                 universal_newlines=True)
+    qstat, err = proc.communicate()
+    if err:
+        raise Exception("Can't run qstat: %s" % err)
+
+    user_stats = {}
+
+    parse = False
+    for line in qstat.split('\n'):
+        if not parse or not line:
+            if line.startswith('-'):
+                parse = True
+            continue
+
+        job_id, _user, queue, name, _session, _nodes, _tasks, rmem, rtime, status, time = re.split('\s+', line.strip())
+
+        user_stats[job_id.split('.')[0]] = (name, time, status, queue, rmem, rtime)
+
+    return user_stats
+
+
+def get_active_jobs():
     proc = Popen('qstat', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
         raise Exception("Can't run qstat: %s" % err)
 
-    if mine:
-        user_stats = {}
+    user_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    queue_stats = defaultdict(lambda: defaultdict(int))
+    total_stats = defaultdict(int)
 
-        for line in qstat.split('\n')[2:]:
-            if not line:
-                continue
+    for line in qstat.split('\n')[2:]:
+        if not line:
+            continue
 
-            job_id, name, user, time, status, queue = re.split('\s+', line.strip())
-            if user != USER:
-                continue
+        job_id, name, user, time, status, queue = re.split('\s+', line.strip())
 
-            user_stats[job_id] = (name, time, status, queue)
+        user = USER_LABEL if user == USER else user
+        user_stats[user][queue][status] += 1
+        queue_stats[queue][status] += 1
+        total_stats[status] += 1
 
-        return user_stats
-    else:
-        user_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        queue_stats = defaultdict(lambda: defaultdict(int))
-        total_stats = defaultdict(int)
-
-        for line in qstat.split('\n')[2:]:
-            if not line:
-                continue
-
-            job_id, name, user, time, status, queue = re.split('\s+', line.strip())
-
-            user = USER_LABEL if user == USER else user
-            user_stats[user][queue][status] += 1
-            queue_stats[queue][status] += 1
-            total_stats[status] += 1
-
-        return user_stats, queue_stats, total_stats
+    return user_stats, queue_stats, total_stats
 
 
-def print_all_jobs(args):
+def print_all_jobs(_):
     user_stats, queue_stats, total_stats = get_active_jobs()
 
     print("=========================================================")
@@ -124,8 +126,8 @@ def print_all_jobs(args):
     print("%-15s %-10s %-10s %-10s %-10s" % row)
 
 
-def details(args):
-    qstat = get_active_jobs(mine=True)
+def details(_):
+    qstat = get_my_jobs()
     logged = read_log()
     output = read_output()
 
@@ -137,7 +139,7 @@ def details(args):
 
     jobs = sorted(set(logged.keys() + output.keys()), key=lambda x: int(x.split('.')[0]), reverse=True)
     for job in jobs:
-        name, time, status, queue = qstat.get(job, ('',) * 4)
+        name, time, status, queue, rmem, rtime = qstat.get(job, ('',) * 4)
         job_output = output.get(job, {})
         start, cmd = logged.get(job, ('-', ''))
 
@@ -162,7 +164,7 @@ def details(args):
         print(columns % tuple(row))
 
 
-def archive(args):
+def archive(_):
     print('ARCHIVE')
 
 
