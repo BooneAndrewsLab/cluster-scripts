@@ -16,10 +16,24 @@ USER_LABEL = '*%s' % (USER,)
 
 
 class JobStatusError(Exception):
-    pass
+    """Custom error thrown by jobstatus code"""
 
 
 def read_pbs_output():
+    """Parse all job output files in ~/pbs-output/ folder and return the details as a job_id -> job_details pairs.
+    Known job_details keys are:
+    1. "Run command"
+    2. "Execution host"
+    3. "Exit status"
+    "Resources used" is parsed further into:
+    4.1 "cput"
+    4.2 "walltime"
+    4.3 "mem"
+    4.4 "vmem"
+
+    :return: Parsed jobs from ~/pbs-output/ folder
+    :rtype: dict
+    """
     res = {}
 
     for out in os.listdir(PBS_PATH):
@@ -28,10 +42,11 @@ def read_pbs_output():
 
         job_id = out[:-3]  # remove .OU
 
+        # Set ctime of the output file as execution end time
         out_data = {'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out)))}
         with open(os.path.join(PBS_PATH, out)) as fin:
             for line in fin:
-                if line.startswith('==>'):
+                if line.startswith('==>'):  # Parse only useful details, ignore job output for now
                     param, val = line[4:].strip().split(':', 1)
                     param = param.strip()
 
@@ -46,6 +61,12 @@ def read_pbs_output():
 
 
 def read_pbs_log():
+    """Parse .pbs_log file created by the new submitjob script for some extra info on running/finished jobs. Returns
+    job_id -> (timestamp, command) pairs.
+
+    :return: Parsed jobs from ~/.pbs_log file
+    :rtype: Dict[String, Tuple[datetime, String]]
+    """
     res = {}
 
     if os.path.isfile(LOG_PATH):
@@ -58,6 +79,13 @@ def read_pbs_log():
 
 
 def read_qstat_detailed():
+    """Parse qstat -f output to get the most details about queued/running jobs of the user that executes this script.
+    Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
+    resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
+
+    :return: Parsed jobs from qstat output
+    :rtype: dict
+    """
     proc = Popen('qstat -f', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
@@ -65,19 +93,24 @@ def read_qstat_detailed():
 
     jobs = {}
 
-    job_re = re.compile("Job Id:[\s\S]*?(?=\nJob Id:|$)")
-    job_param_re = re.compile('[ ]{4}[\s\S]*?(?=\n[ ]{4}|$)')
+    job_re = re.compile("Job Id:[\s\S]*?(?=\nJob Id:|$)")  # Regex that parses each "Job Id" block
+    job_param_re = re.compile('[ ]{4}[\s\S]*?(?=\n[ ]{4}|$)')  # Regex that parses each key=value pair from Job Id block
 
     for job in job_re.findall(qstat):
         job_id = job[8:job.index('\n')]
         job_data = dict([kv.strip().replace('\n\t', '').split(' = ') for kv in job_param_re.findall(job)])
-        if job_data['euser'] == USER:
+        if job_data['euser'] == USER:  # Store only current user's jobs
             jobs[job_id] = job_data
 
     return jobs
 
 
 def read_qstat():
+    """Parses the brief qstat output for all users and makes 3 separate summaries: users, queues, total
+
+    :return: Job summaries for users, queues and total
+    :rtype: tuple[dict, dict, dict]
+    """
     proc = Popen('qstat', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
     qstat, err = proc.communicate()
@@ -88,7 +121,7 @@ def read_qstat():
     queue_stats = defaultdict(lambda: defaultdict(int))
     total_stats = defaultdict(int)
 
-    for line in qstat.split('\n')[2:]:
+    for line in qstat.split('\n')[2:]:  # skip first two rows of header
         if not line:
             continue
 
@@ -103,6 +136,15 @@ def read_qstat():
 
 
 def _parse_timearg(arg, since=datetime.now()):
+    """Parse a human readable timedelta option: 5h,3w,2d,... and subtracts it from the date
+
+    :param arg: timedelta string to parse
+    :param since: reference datetime, or now() by default
+    :type arg: string
+    :type since: datetime
+    :return: Adjusted datetime
+    :rtype: datetime
+    """
     amount = int(arg[:-1])
     period = arg[-1]
 
@@ -112,6 +154,7 @@ def _parse_timearg(arg, since=datetime.now()):
 
 
 def print_all_jobs():
+    """Print a short summary of running/queued jobs. Identical to the old jobstatus script."""
     user_stats, queue_stats, total_stats = read_qstat()
 
     print("=========================================================")
@@ -138,6 +181,11 @@ def print_all_jobs():
 
 
 def details(args):
+    """Print job details for current user. Output format can be fine-tuned with args argument.
+
+    :param args: Arguments from argparse
+    :type args: argparse.Namespace
+    """
     failed_check = None
     failed_value = None
     if args.failed_since:
@@ -153,12 +201,10 @@ def details(args):
         else:
             raise JobStatusError("Invalid argument to --failed-since")
 
+    # Collect job details from all possible sources
     qstatf = read_qstat_detailed()
     logged = read_pbs_log()
     output = read_pbs_output()
-
-    columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
-    header = columns % ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
 
     jobs = sorted(set(qstatf.keys() + logged.keys() + output.keys()), key=lambda x: int(x.split('.')[0]), reverse=True)
     data = []
@@ -212,14 +258,16 @@ def details(args):
         for cmd in data:
             print(cmd)
     else:
+        columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
+        header = columns % ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
+
         print(header)
         print('-' * len(header))
         for row in data:
             print(columns % row)
 
 
-
-def archive(_):
+def archive(args):
     print('ARCHIVE')
 
 
@@ -254,6 +302,7 @@ def main():
     try:
         args.func(args)
     except JobStatusError as e:
+        # Fail gracefully only for known errors
         parser.error(str(e))
 
 
