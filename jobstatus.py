@@ -275,7 +275,7 @@ def details(args):
             print(columns % row)
 
 
-def archive(args):
+def archive(_args):
     print('ARCHIVE')
 
 
