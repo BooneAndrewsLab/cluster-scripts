@@ -37,6 +37,7 @@ def read_pbs_output():
     res = {}
 
     for out in os.listdir(PBS_PATH):
+        # Parse only job files ending with:
         if not out.endswith('.bc.ccbr.utoronto.ca.OU'):
             continue
 
@@ -213,7 +214,7 @@ def details(args):
 
         job_qstat = qstatf.get(job, {})
         job_output = output.get(job, {})
-        start, cmd = logged.get(job, ('', ''))
+        start, cmd = logged.get(job, (None, ''))
 
         status = job_qstat.get('job_state', 'Completed' if job_output else '?')
         if 'queue' in job_qstat:
@@ -225,6 +226,8 @@ def details(args):
 
         if start:
             start = start.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            start = ''
 
         time = ''
         mem = ''
@@ -238,12 +241,13 @@ def details(args):
 
             mem = '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem)
         elif job_output:
-            time = job_output['walltime']
-            mem = job_output['mem']
+            # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
+            # so the job details are continued on the same line and not parsed
+            if 'walltime' in job_output:
+                time = job_output['walltime']
+                mem = job_output['mem']
 
         cmd = (job_output.get('Run command') or cmd.strip('"') or '-')
-        if len(cmd) > 32:
-            cmd = cmd[:29] + '...'
 
         if failed_check:
             if status == 'Failed':
@@ -252,6 +256,10 @@ def details(args):
                 elif failed_check == 'job_id' and job_id >= failed_value:
                     data.append(cmd)
         else:
+            # Truncate the command for stdout printing
+            if len(cmd) > 32:
+                cmd = cmd[:29] + '...'
+
             data.append((job_id, status, exit_status, start, time, mem, cmd))
 
     if failed_check:
@@ -286,8 +294,10 @@ def main():
                                             description='For detailed subcommand help run: <subcommand> -h.', )
 
     details_parser = command_parsers.add_parser('details', help='Show details of my jobs.')
-    details_parser.add_argument('-f', '--failed-since', help='Print all failed commands after FAILED_SINCE.'
-                                                             'Must be either a date (YYYY-MM-DD) or Job ID (numeric part).')
+    details_parser.add_argument(
+        '-f', '--failed-since',
+        help='Print all failed commands after FAILED_SINCE. '
+             'Must be either a date (YYYY-MM-DD) or Job ID (numeric part).')
     details_parser.set_defaults(func=details)
 
     archive_parser = command_parsers.add_parser('archive', help='Archive finished jobs.')
