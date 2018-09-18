@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import operator
 import os
 import re
 import sys
@@ -20,6 +21,8 @@ class JobStatusError(Exception):
 
 
 class Job(dict):
+    """Simple class extending a dictionary with convenient functions for job details retrieval"""
+
     @property
     def cmd(self):
         return self.get('log_cmd', '').strip('"') or self.get('Run command') or '-'
@@ -78,6 +81,8 @@ class Job(dict):
 
 
 class JobList(dict):
+    """Modified dictionary that updates existing job data on item set"""
+
     def __setitem__(self, key, value):
         if key not in self:
             super(JobList, self).__setitem__(key, Job(value))
@@ -90,18 +95,29 @@ class JobList(dict):
 
 
 class TimeDelta:
-    def __init__(self, arg):
-        if re.match('\d{4}-\d{2}-\d{2}', arg):
+    """Makes filtering job list by arbitrary constraints simpler"""
+
+    def __init__(self, arg, newer=True):
+        self.compare = operator.ge if newer else operator.le
+
+        if re.match('^\d{4}-\d{2}-\d{2}$', arg):
             self.field = 'date'
             self.value = datetime.strptime(arg, '%Y-%m-%d')
         elif re.match('^\d+$', arg):
             self.field = 'job_id'
             self.value = int(arg)
-        elif re.match('\d+[hdw]', arg):
+        elif re.match('^\d+[hdw]$', arg):
             self.field = 'date'
             self.value = _parse_timearg(arg)
         else:
-            raise JobStatusError("Invalid argument")
+            raise JobStatusError("Unable to parse: %s" % arg)
+
+    def filter(self, jobs):
+        for job in jobs:
+            if self.field == 'date' and self.compare(job['finished'], self.value):
+                yield job
+            elif self.field == 'job_id' and self.compare(job.job_id, self.value):
+                yield job
 
 
 def read_pbs_output(jobs=None):
@@ -280,29 +296,14 @@ def details(args):
     :param args: Arguments from argparse
     :type args: argparse.Namespace
     """
-    failed_check = None
-    failed_value = None
-    if args.failed_since:
-        if re.match('\d{4}-\d{2}-\d{2}', args.failed_since):
-            failed_check = 'date'
-            failed_value = datetime.strptime(args.failed_since, '%Y-%m-%d')
-        elif re.match('^\d+$', args.failed_since):
-            failed_check = 'job_id'
-            failed_value = int(args.failed_since)
-        elif re.match('\d+[hdw]', args.failed_since):
-            failed_check = 'date'
-            failed_value = _parse_timearg(args.failed_since)
-        else:
-            raise JobStatusError("Invalid argument to --failed-since")
 
-    # Collect job details from all possible sources
     jobs = read_all()
 
-    if failed_check:
-        for job in filter(lambda x: x.state == 'Failed', jobs):
-            if failed_check == 'date' and job['finished'] >= failed_value:
-                print(job.cmd)
-            elif failed_check == 'job_id' and job.job_id >= failed_value:
+    if args.failed_since:
+        failed_check = TimeDelta(args.failed_since)
+
+        for job in failed_check.filter(jobs):
+            if job.state == 'Failed':
                 print(job.cmd)
     else:
         columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
@@ -311,9 +312,13 @@ def details(args):
         print(header)
         print('-' * len(header))
 
+        i = 1
         for job in jobs:
-            print(columns %
-                  (job.job_id, job.state, job.exit_status, job.start, job.runtime, job.memory, job.cmd_trucated()))
+            print(columns % (job.job_id, job.state, job.exit_status,
+                             job.start, job.runtime, job.memory, job.cmd_trucated()))
+            i += 1
+            if i > args.limit_output:
+                break
 
 
 def archive(_args):
@@ -341,6 +346,8 @@ def main():
         '-f', '--failed-since',
         help='Print all failed commands after FAILED_SINCE. '
              'Must be either a date (YYYY-MM-DD) or Job ID (numeric part).')
+    details_parser.add_argument('-l', '--limit-output', help='Limit output to this many lines (default: 50).',
+                                default=50, type=int)
     details_parser.set_defaults(func=details)
 
     archive_parser = command_parsers.add_parser('archive', help='Archive finished jobs.')
