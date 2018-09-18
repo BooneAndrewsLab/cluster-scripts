@@ -2,17 +2,20 @@
 
 import operator
 import os
+import random
 import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 from subprocess import Popen, PIPE
+from tarfile import TarFile
 
 HOME = os.getenv("HOME")
 USER = os.getenv("USER")
 
 LOG_PATH = os.path.join(HOME, '.pbs_log')
 PBS_PATH = os.path.join(HOME, 'pbs-output')
+PBS_ARCHIVE_PATH = os.path.join(PBS_PATH, 'archive')
 USER_LABEL = '*%s' % (USER,)
 
 
@@ -90,6 +93,12 @@ class JobList(dict):
         else:
             self.__getitem__(key).update(value)
 
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return sorted(self.values(), key=lambda x: x.job_id, reverse=True)[item].__iter__()
+
+        return super(JobList, self).__getitem__(item)
+
     def __iter__(self):
         return sorted(self.values(), key=lambda x: x.job_id, reverse=True).__iter__()
 
@@ -114,7 +123,7 @@ class TimeDelta:
 
     def filter(self, jobs):
         for job in jobs:
-            if self.field == 'date' and self.compare(job['finished'], self.value):
+            if self.field == 'date' and 'finished' in job and self.compare(job['finished'], self.value):
                 yield job
             elif self.field == 'job_id' and self.compare(job.job_id, self.value):
                 yield job
@@ -145,7 +154,8 @@ def read_pbs_output(jobs=None):
         job_id = out[:-3]  # remove .OU
 
         # Set ctime of the output file as execution end time
-        out_data = {'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out)))}
+        out_data = {'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out))),
+                    'pbs_output': os.path.join(PBS_PATH, out)}
         with open(os.path.join(PBS_PATH, out)) as fin:
             for line in fin:
                 if line.startswith('==>'):  # Parse only useful details, ignore job output for now
@@ -175,7 +185,9 @@ def read_pbs_log(jobs=None):
         with open(LOG_PATH) as log:
             for l in log:
                 timestamp, job_id, cmd = l.strip().split(None, 2)
-                jobs[job_id] = {'start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"), 'log_cmd': cmd}
+                jobs[job_id] = {'start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"),
+                                'pbs_log': l,
+                                'log_cmd': cmd}
 
     return jobs
 
@@ -201,6 +213,7 @@ def read_qstat_detailed(jobs=None):
     for job in job_re.findall(qstat):
         job_id = job[8:job.index('\n')]
         job_data = dict([kv.strip().replace('\n\t', '').split(' = ') for kv in job_param_re.findall(job)])
+        job_data['qstat'] = True
         if job_data['euser'] == USER:  # Store only current user's jobs
             jobs[job_id] = job_data
 
@@ -296,7 +309,6 @@ def details(args):
     :param args: Arguments from argparse
     :type args: argparse.Namespace
     """
-
     jobs = read_all()
 
     if args.failed_since:
@@ -312,19 +324,55 @@ def details(args):
         print(header)
         print('-' * len(header))
 
-        i = 1
-        for job in jobs:
+        for job in jobs[:args.limit_output]:
             print(columns % (job.job_id, job.state, job.exit_status,
                              job.start, job.runtime, job.memory, job.cmd_trucated()))
-            i += 1
-            if i > args.limit_output:
-                break
 
 
-def archive(_args):
-    print('ARCHIVE')
-    for job in read_all():
-        print(job.job_id, job.cmd)
+def archive(args):
+    """Archive old finished jobs, save them in a gzipped file
+
+    :param args: Arguments from argparse
+    :type args: argparse.Namespace
+    """
+    timefilter = TimeDelta(args.age, newer=False)
+    tar_file = '%s_%032x.tar.gz' % (datetime.now().strftime('%Y-%m-%d'), random.getrandbits(128))
+
+    jobs = read_all()
+
+    # Delete files only when we know they are all safely zipped
+    delete_list = []
+    archived_job_ids = set()
+
+    with TarFile.open(os.path.join(PBS_ARCHIVE_PATH, tar_file), 'w:gz') as tar:
+        for job in timefilter.filter(jobs):
+            if job.get('qstat'):
+                # Do not delete running jobs!
+                continue
+
+            archived = False
+
+            if job.get('pbs_output'):
+                tar.add(job.get('pbs_output'), arcname=job.get('pbs_output').replace(HOME, '').lstrip('/'))
+                delete_list.append(job.get('pbs_output'))
+                archived = True
+
+            if job.get('pbs_log'):
+                archived_job_ids.add(job.job_id)
+                archived = True
+
+            if archived:
+                print('Archived job %s' % job.job_id)
+
+    with open(LOG_PATH + '_bkp', 'w') as log:
+        for job in jobs[::-1]:
+            if job.get('pbs_log') and job.job_id not in archived_job_ids:
+                log.write(job.get('pbs_log'))
+
+    for f in delete_list:
+        os.remove(f)
+
+    os.rename(LOG_PATH + '_bkp', LOG_PATH)
 
 
 def main():
@@ -333,28 +381,28 @@ def main():
         return
 
     import argparse
+    timedelta_help = 'Must be either a date (YYYY-MM-DD), Job ID (numeric part) or a time delta (2w, 3h or 1d). ' \
+                     'Time delta unit can be one of: h(hours), d(days) or w(weeks)'
 
     parser = argparse.ArgumentParser(
         description='Check job status. If no subcommand is specified it prints out a summary of all jobs.')
 
     command_parsers = parser.add_subparsers(title='Available subcommands',
                                             dest='command',
-                                            description='For detailed subcommand help run: <subcommand> -h.', )
+                                            description='For detailed subcommand help run: <subcommand> -h.')
 
     details_parser = command_parsers.add_parser('details', help='Show details of my jobs.')
-    details_parser.add_argument(
-        '-f', '--failed-since',
-        help='Print all failed commands after FAILED_SINCE. '
-             'Must be either a date (YYYY-MM-DD) or Job ID (numeric part).')
-    details_parser.add_argument('-l', '--limit-output', help='Limit output to this many lines (default: 50).',
-                                default=50, type=int)
+    details_parser.add_argument('-f', '--failed-since',
+                                help='Print all failed commands after FAILED_SINCE. ' + timedelta_help)
+    # noinspection PyTypeChecker
+    details_parser.add_argument('-l', '--limit-output', default=50, type=int,
+                                help='Limit output to this many lines (default: 50). '
+                                     'Does not apply if printing failed jobs.')
     details_parser.set_defaults(func=details)
 
     archive_parser = command_parsers.add_parser('archive', help='Archive finished jobs.')
-    archive_parser.add_argument('-a', '--age', default='1m',
-                                help='Archive finished jobs older than specified age. '
-                                     'Allowed age format is <number><unit> (ie. 2w or 3m or 1d)'
-                                     'Unit can be one of: d(days), w(weeks) or m(months)')
+    archive_parser.add_argument('age', default='1w', nargs='?',
+                                help='Archive finished jobs older than AGE (default: 1 week). ' + timedelta_help)
     archive_parser.set_defaults(func=archive)
 
     args = parser.parse_args()
