@@ -19,7 +19,92 @@ class JobStatusError(Exception):
     """Custom error thrown by jobstatus code"""
 
 
-def read_pbs_output():
+class Job(dict):
+    @property
+    def cmd(self):
+        return self.get('log_cmd', '').strip('"') or self.get('Run command') or '-'
+
+    def cmd_trucated(self, length=32):
+        cmd = self.cmd
+        if len(cmd) > length:
+            cmd = cmd[:length - 3] + '...'
+        return cmd
+
+    @property
+    def job_id(self):
+        return self['job_id']
+
+    @property
+    def exit_status(self):
+        return self.get('Exit status', '-')
+
+    @property
+    def state(self):
+        if self.exit_status not in ('-', '0'):
+            return 'Failed'
+
+        s = self.get('job_state', 'Completed' if 'Execution host' in self else '?')
+        if 'queue' in self:
+            s += ' (%s)' % self['queue']
+
+        return s
+
+    @property
+    def start(self):
+        if 'start_time' in self:
+            return self['start_time'].strftime('%Y-%m-%d %H:%M:%S')
+        return ''
+
+    @property
+    def runtime(self):
+        if 'Resource_List.walltime' in self:
+            return '%s/%s' % (self.get('resources_used.walltime', '00:00:00'), self['Resource_List.walltime'])
+        elif 'walltime' in self:
+            return self['walltime']
+        return ''
+
+    @property
+    def memory(self):
+        if 'Resource_List.mem' in self:
+            mem = float(self.get('resources_used.mem', '0kb')[:-2]) / (1024 * 1024)
+            rmem = float(self.get('Resource_List.mem', '0mb')[:-2]) / 1024
+
+            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem)
+        elif 'mem' in self:
+            # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
+            # so the job details are continued on the same line and not parsed
+            return self['mem']
+        return ''
+
+
+class JobList(dict):
+    def __setitem__(self, key, value):
+        if key not in self:
+            super(JobList, self).__setitem__(key, Job(value))
+            self[key]['job_id'] = int(key.split('.')[0])
+        else:
+            self.__getitem__(key).update(value)
+
+    def __iter__(self):
+        return sorted(self.values(), key=lambda x: x.job_id, reverse=True).__iter__()
+
+
+class TimeDelta:
+    def __init__(self, arg):
+        if re.match('\d{4}-\d{2}-\d{2}', arg):
+            self.field = 'date'
+            self.value = datetime.strptime(arg, '%Y-%m-%d')
+        elif re.match('^\d+$', arg):
+            self.field = 'job_id'
+            self.value = int(arg)
+        elif re.match('\d+[hdw]', arg):
+            self.field = 'date'
+            self.value = _parse_timearg(arg)
+        else:
+            raise JobStatusError("Invalid argument")
+
+
+def read_pbs_output(jobs=None):
     """Parse all job output files in ~/pbs-output/ folder and return the details as a job_id -> job_details pairs.
     Known job_details keys are:
     1. "Run command"
@@ -34,7 +119,7 @@ def read_pbs_output():
     :return: Parsed jobs from ~/pbs-output/ folder
     :rtype: dict
     """
-    res = {}
+    jobs = jobs if jobs is not None else JobList()
 
     for out in os.listdir(PBS_PATH):
         # Parse only job files ending with:
@@ -56,30 +141,30 @@ def read_pbs_output():
                     else:
                         out_data[param] = val.strip()
 
-        res[job_id] = out_data
+        jobs[job_id] = out_data
 
-    return res
+    return jobs
 
 
-def read_pbs_log():
+def read_pbs_log(jobs=None):
     """Parse .pbs_log file created by the new submitjob script for some extra info on running/finished jobs. Returns
     job_id -> (timestamp, command) pairs.
 
     :return: Parsed jobs from ~/.pbs_log file
     :rtype: Dict[String, Tuple[datetime, String]]
     """
-    res = {}
+    jobs = jobs if jobs is not None else JobList()
 
     if os.path.isfile(LOG_PATH):
         with open(LOG_PATH) as log:
             for l in log:
                 timestamp, job_id, cmd = l.strip().split(None, 2)
-                res[job_id] = (datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"), cmd)
+                jobs[job_id] = {'start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"), 'log_cmd': cmd}
 
-    return res
+    return jobs
 
 
-def read_qstat_detailed():
+def read_qstat_detailed(jobs=None):
     """Parse qstat -f output to get the most details about queued/running jobs of the user that executes this script.
     Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
     resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
@@ -92,7 +177,7 @@ def read_qstat_detailed():
     if err:
         raise Exception("Can't run qstat: %s" % err)
 
-    jobs = {}
+    jobs = jobs if jobs is not None else JobList()
 
     job_re = re.compile("Job Id:[\s\S]*?(?=\nJob Id:|$)")  # Regex that parses each "Job Id" block
     job_param_re = re.compile('[ ]{4}[\s\S]*?(?=\n[ ]{4}|$)')  # Regex that parses each key=value pair from Job Id block
@@ -102,6 +187,14 @@ def read_qstat_detailed():
         job_data = dict([kv.strip().replace('\n\t', '').split(' = ') for kv in job_param_re.findall(job)])
         if job_data['euser'] == USER:  # Store only current user's jobs
             jobs[job_id] = job_data
+
+    return jobs
+
+
+def read_all():
+    jobs = read_qstat_detailed()
+    read_pbs_log(jobs)
+    read_pbs_output(jobs)
 
     return jobs
 
@@ -203,80 +296,30 @@ def details(args):
             raise JobStatusError("Invalid argument to --failed-since")
 
     # Collect job details from all possible sources
-    qstatf = read_qstat_detailed()
-    logged = read_pbs_log()
-    output = read_pbs_output()
-
-    jobs = sorted(set(qstatf.keys() + logged.keys() + output.keys()), key=lambda x: int(x.split('.')[0]), reverse=True)
-    data = []
-    for job in jobs:
-        job_id = int(job.split('.')[0])
-
-        job_qstat = qstatf.get(job, {})
-        job_output = output.get(job, {})
-        start, cmd = logged.get(job, (None, ''))
-
-        status = job_qstat.get('job_state', 'Completed' if job_output else '?')
-        if 'queue' in job_qstat:
-            status += ' (%s)' % job_qstat['queue']
-
-        exit_status = job_output.get('Exit status', '-')
-        if exit_status not in ('-', '0'):
-            status = 'Failed'
-
-        if start:
-            start = start.strftime('%Y-%m-%d %H:%M:%S')
-        else:
-            start = ''
-
-        time = ''
-        mem = ''
-
-        if job_qstat:
-            time = '%s/%s' % (
-                job_qstat.get('resources_used.walltime', '00:00:00'), job_qstat.get('Resource_List.walltime'))
-
-            mem = float(job_qstat.get('resources_used.mem', '0kb')[:-2]) / (1024 * 1024)
-            rmem = float(job_qstat.get('Resource_List.mem', '0mb')[:-2]) / 1024
-
-            mem = '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem)
-        elif job_output:
-            # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
-            # so the job details are continued on the same line and not parsed
-            if 'walltime' in job_output:
-                time = job_output['walltime']
-                mem = job_output['mem']
-
-        cmd = (job_output.get('Run command') or cmd.strip('"') or '-')
-
-        if failed_check:
-            if status == 'Failed':
-                if failed_check == 'date' and job_output['finished'] >= failed_value:
-                    data.append(cmd)
-                elif failed_check == 'job_id' and job_id >= failed_value:
-                    data.append(cmd)
-        else:
-            # Truncate the command for stdout printing
-            if len(cmd) > 32:
-                cmd = cmd[:29] + '...'
-
-            data.append((job_id, status, exit_status, start, time, mem, cmd))
+    jobs = read_all()
 
     if failed_check:
-        for cmd in data:
-            print(cmd)
+        for job in filter(lambda x: x.state == 'Failed', jobs):
+            if failed_check == 'date' and job['finished'] >= failed_value:
+                print(job.cmd)
+            elif failed_check == 'job_id' and job.job_id >= failed_value:
+                print(job.cmd)
     else:
         columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
         header = columns % ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
 
         print(header)
         print('-' * len(header))
-        for row in data:
-            print(columns % row)
+
+        for job in jobs:
+            print(columns %
+                  (job.job_id, job.state, job.exit_status, job.start, job.runtime, job.memory, job.cmd_trucated()))
 
 
 def archive(_args):
     print('ARCHIVE')
+    for job in read_all():
+        print(job.job_id, job.cmd)
 
 
 def main():
