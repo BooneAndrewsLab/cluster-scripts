@@ -123,8 +123,13 @@ class TimeDelta:
 
     def filter(self, jobs):
         for job in jobs:
-            if self.field == 'date' and 'finished' in job and self.compare(job['finished'], self.value):
-                yield job
+            if self.field == 'date':
+                if 'finished' in job:
+                    if self.compare(job['finished'], self.value):
+                        yield job
+                elif 'qstat' not in job and 'log_start_time' in job:
+                    if self.compare(job['log_start_time'], self.value):
+                        yield job
             elif self.field == 'job_id' and self.compare(job.job_id, self.value):
                 yield job
 
