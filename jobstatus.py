@@ -57,8 +57,8 @@ class Job(dict):
 
     @property
     def start(self):
-        if 'start_time' in self:
-            return self['start_time'].strftime('%Y-%m-%d %H:%M:%S')
+        if 'log_start_time' in self:
+            return self['log_start_time'].strftime('%Y-%m-%d %H:%M:%S')
         return ''
 
     @property
@@ -185,7 +185,7 @@ def read_pbs_log(jobs=None):
         with open(LOG_PATH) as log:
             for l in log:
                 timestamp, job_id, cmd = l.strip().split(None, 2)
-                jobs[job_id] = {'start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"),
+                jobs[job_id] = {'log_start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"),
                                 'pbs_log': l,
                                 'log_cmd': cmd}
 
