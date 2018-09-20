@@ -344,6 +344,9 @@ def archive(args):
     delete_list = []
     archived_job_ids = set()
 
+    if not os.path.exists(PBS_ARCHIVE_PATH):
+        os.mkdir(PBS_ARCHIVE_PATH)
+
     with TarFile.open(os.path.join(PBS_ARCHIVE_PATH, tar_file), 'w:gz') as tar:
         for job in timefilter.filter(jobs):
             if job.get('qstat'):
