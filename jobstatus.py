@@ -341,9 +341,21 @@ def archive(args):
     :type args: argparse.Namespace
     """
     timefilter = TimeDelta(args.age, newer=False)
-    tar_file = '%s_%032x.tar.gz' % (datetime.now().strftime('%Y-%m-%d'), random.getrandbits(128))
 
     jobs = read_all()
+    jobs_to_archive = set()
+
+    for job in timefilter.filter(jobs):
+        if job.get('qstat'):
+            # Do not delete running jobs!
+            continue
+
+        if job.get('pbs_output') or job.get('pbs_log'):
+            jobs_to_archive.add(job)
+
+    if not jobs_to_archive:
+        # Bail, nothing to do here
+        return
 
     # Delete files only when we know they are all safely zipped
     delete_list = []
@@ -352,25 +364,19 @@ def archive(args):
     if not os.path.exists(PBS_ARCHIVE_PATH):
         os.mkdir(PBS_ARCHIVE_PATH)
 
-    with TarFile.open(os.path.join(PBS_ARCHIVE_PATH, tar_file), 'w:gz') as tar:
-        for job in timefilter.filter(jobs):
-            if job.get('qstat'):
-                # Do not delete running jobs!
-                continue
+    tar_file = '%s_%032x.tar.gz' % (datetime.now().strftime('%Y-%m-%d'), random.getrandbits(128))
+    tar_path = os.path.join(PBS_ARCHIVE_PATH, tar_file)
 
-            archived = False
-
+    with TarFile.open(tar_path, 'w:gz') as tar:
+        for job in jobs_to_archive:
             if job.get('pbs_output'):
                 tar.add(job.get('pbs_output'), arcname=job.get('pbs_output').replace(HOME, '').lstrip('/'))
                 delete_list.append(job.get('pbs_output'))
-                archived = True
 
             if job.get('pbs_log'):
                 archived_job_ids.add(job.job_id)
-                archived = True
 
-            if archived:
-                print('Archived job %s' % job.job_id)
+            print('Archived job %s' % job.job_id)
 
     with open(LOG_PATH + '_bkp', 'w') as log:
         for job in jobs[::-1]:
