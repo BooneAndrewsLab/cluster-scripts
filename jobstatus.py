@@ -112,9 +112,13 @@ class TimeDelta:
         if re.match('^\d{4}-\d{2}-\d{2}$', arg):
             self.field = 'date'
             self.value = datetime.strptime(arg, '%Y-%m-%d')
-        elif re.match('^\d+$', arg):
+        elif re.match('^\d+[a-cn-u.]*-*\d*[a-cn-u.]*$', arg):
             self.field = 'job_id'
-            self.value = int(arg)
+            if '-' in arg:
+                self.value_min = int(arg.split('-')[0].split('.')[0])
+                self.value_max = int(arg.split('-')[1].split('.')[0])
+            else:
+                self.value_min = int(arg.split('.')[0])
         elif re.match('^\d+[hdw]$', arg):
             self.field = 'date'
             self.value = _parse_timearg(arg)
@@ -130,8 +134,12 @@ class TimeDelta:
                 elif 'qstat' not in job and 'log_start_time' in job:
                     if self.compare(job['log_start_time'], self.value):
                         yield job
-            elif self.field == 'job_id' and self.compare(job.job_id, self.value):
-                yield job
+            elif self.field == 'job_id':
+                if self.compare(job.job_id, self.value_min):
+                    if hasattr(self, 'value_max'):
+                        if not operator.le(job.job_id, self.value_max):
+                            continue
+                    yield job
 
 
 def read_pbs_output(jobs=None):
@@ -316,12 +324,32 @@ def details(args):
     """
     jobs = read_all()
 
-    if args.failed_since:
-        failed_check = TimeDelta(args.failed_since)
+    if args.limit_output.isdigit():
+        if int(args.limit_output) < 1000000:
+            jobs = jobs[:int(args.limit_output)]
+        else:
+            limit_check = TimeDelta(args.limit_output)
+            jobs = limit_check.filter(jobs)
+    else:
+        limit_check = TimeDelta(args.limit_output)
+        jobs = limit_check.filter(jobs)
 
-        for job in failed_check.filter(jobs):
-            if job.state == 'Failed':
-                print(job.cmd)
+    if not args.print_all:
+        if not args.print_running:
+            jobs = [job for job in jobs if not job.state.startswith('R')]
+        if not args.print_queued:
+            jobs = [job for job in jobs if not job.state.startswith('Q')]
+        if not args.print_completed:
+            jobs = [job for job in jobs if not (job.state.startswith('C') or job.state == '?')]
+        if not args.print_failed:
+            jobs = [job for job in jobs if not job.state.startswith('F')]
+
+    if args.output == 'jobid':
+        jobids = [str(job.job_id) for job in jobs]
+        print(' '.join(jobids))
+    elif args.output == 'cmd':
+        for job in jobs:
+            print(job.cmd)
     else:
         columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
         header = columns % ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
@@ -329,7 +357,7 @@ def details(args):
         print(header)
         print('-' * len(header))
 
-        for job in jobs[:args.limit_output]:
+        for job in jobs:
             print(columns % (job.job_id, job.state, job.exit_status,
                              job.start, job.runtime, job.memory, job.cmd_trucated()))
 
@@ -406,12 +434,26 @@ def main():
                                             description='For detailed subcommand help run: <subcommand> -h.')
 
     details_parser = command_parsers.add_parser('details', help='Show details of my jobs.')
-    details_parser.add_argument('-f', '--failed-since',
-                                help='Print all failed commands after FAILED_SINCE. ' + timedelta_help)
-    # noinspection PyTypeChecker
-    details_parser.add_argument('-l', '--limit-output', default=50, type=int,
-                                help='Limit output to this many lines (default: 50). '
-                                     'Does not apply if printing failed jobs.')
+    details_parser.add_argument('-a', '--print-all', action='store_true',
+                                help='Print all jobs.')
+    details_parser.add_argument('-r', '--print-running', action='store_true',
+                                help='Print running jobs.')
+    details_parser.add_argument('-q', '--print-queued', action='store_true',
+                                help='Print queued jobs.')
+    details_parser.add_argument('-c', '--print-completed', action='store_true',
+                                help='Print completed jobs.')
+    details_parser.add_argument('-f', '--print-failed', action='store_true',
+                                help='Print failed jobs.')
+    details_parser.add_argument('-l', '--limit-output', default='50',
+                                help='Limit output to either: number of lines, Job ID or time delta (2w, 3h or 1d). '
+                                     'The default is 50 lines. '
+                                     'Job ID can be in a form of range (i.e. 28327149-28327165). '
+                                     'Time delta unit can be one of: h(hours), d(days) or w(weeks).')
+    details_parser.add_argument('-o', '--output', default='table',
+                                help='Choose how to display output: table, jobid or cmd (default: table). '
+                                     'TABLE dislays all available information about the job. '
+                                     'JOBID displays space-separated job IDs which is useful for deleting jobs. '
+                                     'CMD displays the commands which is useful for resubmitting jobs.')
     details_parser.set_defaults(func=details)
 
     archive_parser = command_parsers.add_parser('archive', help='Archive finished jobs.')
