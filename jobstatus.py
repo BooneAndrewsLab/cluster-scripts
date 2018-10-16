@@ -371,7 +371,7 @@ def archive(args):
     timefilter = TimeDelta(args.age, newer=False)
 
     jobs = read_all()
-    jobs_to_archive = set()
+    jobs_to_archive = []
 
     for job in timefilter.filter(jobs):
         if job.get('qstat'):
@@ -379,7 +379,7 @@ def archive(args):
             continue
 
         if job.get('pbs_output') or job.get('pbs_log'):
-            jobs_to_archive.add(job)
+            jobs_to_archive.append(job)
 
     if not jobs_to_archive:
         # Bail, nothing to do here
