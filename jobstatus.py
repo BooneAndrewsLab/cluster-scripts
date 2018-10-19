@@ -12,6 +12,11 @@ from tarfile import TarFile
 
 HOME = os.getenv("HOME")
 USER = os.getenv("USER")
+WIDTH = os.getenv("COLUMNS")
+
+if not WIDTH:
+    with os.popen('stty size', 'r') as ttyin:
+        _, WIDTH = map(int, ttyin.read().split())
 
 LOG_PATH = os.path.join(HOME, '.pbs_log')
 PBS_PATH = os.path.join(HOME, 'pbs-output')
@@ -351,15 +356,23 @@ def details(args):
         for job in jobs:
             print(job.cmd)
     else:
-        columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
-        header = columns % ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
+        columns = ['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s']
+        headers = ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
 
+        out_len = ' | '.join(columns[:-1]) % headers[:-1]
+
+        free_space = max(32, WIDTH - 3 - len(out_len))
+
+        columns[-1] = '%%-%ds' % free_space
+
+        columns = ' | '.join(columns)
+        header = columns % headers
         print(header)
         print('-' * len(header))
 
         for job in jobs:
             print(columns % (job.job_id, job.state, job.exit_status,
-                             job.start, job.runtime, job.memory, job.cmd_trucated()))
+                             job.start, job.runtime, job.memory, job.cmd_trucated(free_space)))
 
 
 def archive(args):
