@@ -75,7 +75,7 @@ class Job(dict):
             mem = float(self.get('resources_used.mem', '0kb')[:-2]) / (1024 * 1024)
             rmem = float(self.get('Resource_List.mem', '0mb')[:-2]) / 1024
 
-            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem)
+            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem * 100)
         elif 'mem' in self:
             # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
             # so the job details are continued on the same line and not parsed
@@ -324,6 +324,16 @@ def details(args):
     """
     jobs = read_all()
 
+    if args.print_running or args.print_queued or args.print_completed or args.print_failed:
+        if not args.print_running:
+            jobs = [job for job in jobs if not job.state.startswith('R')]
+        if not args.print_queued:
+            jobs = [job for job in jobs if not job.state.startswith('Q')]
+        if not args.print_completed:
+            jobs = [job for job in jobs if not (job.state.startswith('C') or job.state == '?')]
+        if not args.print_failed:
+            jobs = [job for job in jobs if not job.state.startswith('F')]
+
     if args.limit_output.isdigit():
         if int(args.limit_output) < 1000000:
             jobs = jobs[:int(args.limit_output)]
@@ -333,16 +343,6 @@ def details(args):
     else:
         limit_check = TimeDelta(args.limit_output)
         jobs = limit_check.filter(jobs)
-
-    if not args.print_all:
-        if not args.print_running:
-            jobs = [job for job in jobs if not job.state.startswith('R')]
-        if not args.print_queued:
-            jobs = [job for job in jobs if not job.state.startswith('Q')]
-        if not args.print_completed:
-            jobs = [job for job in jobs if not (job.state.startswith('C') or job.state == '?')]
-        if not args.print_failed:
-            jobs = [job for job in jobs if not job.state.startswith('F')]
 
     if args.output == 'jobid':
         jobids = [str(job.job_id) for job in jobs]
@@ -434,8 +434,6 @@ def main():
                                             description='For detailed subcommand help run: <subcommand> -h.')
 
     details_parser = command_parsers.add_parser('details', help='Show details of my jobs.')
-    details_parser.add_argument('-a', '--print-all', action='store_true',
-                                help='Print all jobs.')
     details_parser.add_argument('-r', '--print-running', action='store_true',
                                 help='Print running jobs.')
     details_parser.add_argument('-q', '--print-queued', action='store_true',
