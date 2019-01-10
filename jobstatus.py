@@ -203,7 +203,12 @@ def read_pbs_log(jobs=None):
         with open(LOG_PATH) as log:
             for l in log:
                 timestamp, job_id, cmd = l.strip().split(None, 2)
-                jobs[job_id] = {'log_start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"),
+                try:
+                    start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]")
+                except ValueError:
+                    start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S]")
+
+                jobs[job_id] = {'log_start_time': start_time,
                                 'pbs_log': l,
                                 'log_cmd': cmd}
 
