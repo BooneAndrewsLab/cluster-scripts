@@ -114,17 +114,17 @@ class TimeDelta:
     def __init__(self, arg, newer=True):
         self.compare = operator.ge if newer else operator.le
 
-        if re.match('^\d{4}-\d{2}-\d{2}$', arg):
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', arg):
             self.field = 'date'
             self.value = datetime.strptime(arg, '%Y-%m-%d')
-        elif re.match('^\d+[a-cn-u.]*-*\d*[a-cn-u.]*$', arg):
+        elif re.match(r'^\d+[a-cn-u.]*-*\d*[a-cn-u.]*$', arg):
             self.field = 'job_id'
             if '-' in arg:
                 self.value_min = int(arg.split('-')[0].split('.')[0])
                 self.value_max = int(arg.split('-')[1].split('.')[0])
             else:
                 self.value_min = int(arg.split('.')[0])
-        elif re.match('^\d+[hdw]$', arg):
+        elif re.match(r'^\d+[hdw]$', arg):
             self.field = 'date'
             self.value = _parse_timearg(arg)
         else:
@@ -230,8 +230,8 @@ def read_qstat_detailed(jobs=None):
 
     jobs = jobs if jobs is not None else JobList()
 
-    job_re = re.compile("Job Id:[\s\S]*?(?=\nJob Id:|$)")  # Regex that parses each "Job Id" block
-    job_param_re = re.compile('[ ]{4}[\s\S]*?(?=\n[ ]{4}|$)')  # Regex that parses each key=value pair from Job Id block
+    job_re = re.compile(r"Job Id:[\s\S]*?(?=\nJob Id:|$)")  # Regex that parses each "Job Id" block
+    job_param_re = re.compile(r'[ ]{4}[\s\S]*?(?=\n[ ]{4}|$)')  # Regex that parses key=value pairs from Job Id block
 
     for job in job_re.findall(qstat):
         job_id = job[8:job.index('\n')]
@@ -271,7 +271,7 @@ def read_qstat():
         if not line:
             continue
 
-        job_id, name, user, time, status, queue = re.split('\s+', line.strip())
+        job_id, name, user, time, status, queue = re.split(r'\s+', line.strip())
 
         user = USER_LABEL if user == USER else user
         user_stats[user][queue][status] += 1
