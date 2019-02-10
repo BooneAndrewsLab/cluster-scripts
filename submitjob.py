@@ -14,9 +14,9 @@ PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 def _sanitize_cmd(bit):
     if "'" in bit and not re.match("^($|'|\")", bit):
         return '"%s"' % (bit,)
-    elif re.match("[${[\]!} ]", bit) and "'" not in bit:
+    elif re.match(r"[${[\]!} ]", bit) and "'" not in bit:
         return "'%s'" % (bit,)
-    elif bit == 'awkt':
+    elif bit == "awkt":
         return "awk -F '\t' -v OFS='\t'"
     elif bit == 'sortt':
         return "sort -t $'\t'"
@@ -59,7 +59,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     resources = ['walltime=%s' % (walltime,), 'mem=%s' % (memory,), 'nodes=1:ppn=%s' % (cpu,)]
     resources = ','.join(resources)
 
-    cmd_echo = cmd.replace('$', '\$').replace('"', '\"')
+    cmd_echo = cmd.replace('$', r'\$').replace('"', r'\"')
 
     if not job_name:
         job_name = cmd.split()[0]  # Remove anything following a space (can be introduced during smart quoting)
@@ -120,6 +120,7 @@ def main():
                         help='The expected run time in hours, default 24.')
     parser.add_argument('-m', '-mem', '--mem', type=float, default=2,
                         help='Max amount of memory to be used in Gb, default 2.')
+    # noinspection PyTypeChecker
     parser.add_argument('-c', '-cpu', '--cpu', type=int, default=1,
                         help='Number of CPUs required on a single node, default 1.')
     parser.add_argument('-f', '-file', '--file', type=argparse.FileType('rU'),
@@ -130,7 +131,7 @@ def main():
     parser.add_argument('-L', '-log-path', '--log-path', default=os.path.join(HOME, '.pbs_log'),
                         type=argparse.FileType('a'),
                         help='Where to log submitted jobs.')
-    parser.add_argument('-E', '-email', '--email', type=str, default=None,
+    parser.add_argument('-E', '-email', '--email', default=None,
                         help='Send an email to this address when a job ends or is aborted')
 
     args = parser.parse_args()
