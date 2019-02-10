@@ -12,6 +12,11 @@ from tarfile import TarFile
 
 HOME = os.getenv("HOME")
 USER = os.getenv("USER")
+WIDTH = os.getenv("COLUMNS")
+
+if not WIDTH:
+    with os.popen('stty size', 'r') as ttyin:
+        _, WIDTH = map(int, ttyin.read().split())
 
 LOG_PATH = os.path.join(HOME, '.pbs_log')
 PBS_PATH = os.path.join(HOME, 'pbs-output')
@@ -75,7 +80,7 @@ class Job(dict):
             mem = float(self.get('resources_used.mem', '0kb')[:-2]) / (1024 * 1024)
             rmem = float(self.get('Resource_List.mem', '0mb')[:-2]) / 1024
 
-            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem)
+            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem * 100)
         elif 'mem' in self:
             # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
             # so the job details are continued on the same line and not parsed
@@ -112,9 +117,13 @@ class TimeDelta:
         if re.match('^\d{4}-\d{2}-\d{2}$', arg):
             self.field = 'date'
             self.value = datetime.strptime(arg, '%Y-%m-%d')
-        elif re.match('^\d+$', arg):
+        elif re.match('^\d+[a-cn-u.]*-*\d*[a-cn-u.]*$', arg):
             self.field = 'job_id'
-            self.value = int(arg)
+            if '-' in arg:
+                self.value_min = int(arg.split('-')[0].split('.')[0])
+                self.value_max = int(arg.split('-')[1].split('.')[0])
+            else:
+                self.value_min = int(arg.split('.')[0])
         elif re.match('^\d+[hdw]$', arg):
             self.field = 'date'
             self.value = _parse_timearg(arg)
@@ -130,8 +139,12 @@ class TimeDelta:
                 elif 'qstat' not in job and 'log_start_time' in job:
                     if self.compare(job['log_start_time'], self.value):
                         yield job
-            elif self.field == 'job_id' and self.compare(job.job_id, self.value):
-                yield job
+            elif self.field == 'job_id':
+                if self.compare(job.job_id, self.value_min):
+                    if hasattr(self, 'value_max'):
+                        if not operator.le(job.job_id, self.value_max):
+                            continue
+                    yield job
 
 
 def read_pbs_output(jobs=None):
@@ -190,7 +203,12 @@ def read_pbs_log(jobs=None):
         with open(LOG_PATH) as log:
             for l in log:
                 timestamp, job_id, cmd = l.strip().split(None, 2)
-                jobs[job_id] = {'log_start_time': datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]"),
+                try:
+                    start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]")
+                except ValueError:
+                    start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S]")
+
+                jobs[job_id] = {'log_start_time': start_time,
                                 'pbs_log': l,
                                 'log_cmd': cmd}
 
@@ -316,22 +334,50 @@ def details(args):
     """
     jobs = read_all()
 
-    if args.failed_since:
-        failed_check = TimeDelta(args.failed_since)
+    if args.print_running or args.print_queued or args.print_completed or args.print_failed:
+        if not args.print_running:
+            jobs = [job for job in jobs if not job.state.startswith('R')]
+        if not args.print_queued:
+            jobs = [job for job in jobs if not job.state.startswith('Q')]
+        if not args.print_completed:
+            jobs = [job for job in jobs if not (job.state.startswith('C') or job.state == '?')]
+        if not args.print_failed:
+            jobs = [job for job in jobs if not job.state.startswith('F')]
 
-        for job in failed_check.filter(jobs):
-            if job.state == 'Failed':
-                print(job.cmd)
+    if args.limit_output.isdigit():
+        if int(args.limit_output) < 1000000:
+            jobs = jobs[:int(args.limit_output)]
+        else:
+            limit_check = TimeDelta(args.limit_output)
+            jobs = limit_check.filter(jobs)
     else:
-        columns = ' | '.join(['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s'])
-        header = columns % ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
+        limit_check = TimeDelta(args.limit_output)
+        jobs = limit_check.filter(jobs)
 
+    if args.output == 'jobid':
+        jobids = [str(job.job_id) for job in jobs]
+        print(' '.join(jobids))
+    elif args.output == 'cmd':
+        for job in jobs:
+            print(job.cmd)
+    else:
+        columns = ['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s']
+        headers = ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
+
+        out_len = ' | '.join(columns[:-1]) % headers[:-1]
+
+        free_space = max(32, WIDTH - 3 - len(out_len))
+
+        columns[-1] = '%%-%ds' % free_space
+
+        columns = ' | '.join(columns)
+        header = columns % headers
         print(header)
         print('-' * len(header))
 
-        for job in jobs[:args.limit_output]:
+        for job in jobs:
             print(columns % (job.job_id, job.state, job.exit_status,
-                             job.start, job.runtime, job.memory, job.cmd_trucated()))
+                             job.start, job.runtime, job.memory, job.cmd_trucated(free_space)))
 
 
 def archive(args):
@@ -343,7 +389,7 @@ def archive(args):
     timefilter = TimeDelta(args.age, newer=False)
 
     jobs = read_all()
-    jobs_to_archive = set()
+    jobs_to_archive = []
 
     for job in timefilter.filter(jobs):
         if job.get('qstat'):
@@ -351,7 +397,7 @@ def archive(args):
             continue
 
         if job.get('pbs_output') or job.get('pbs_log'):
-            jobs_to_archive.add(job)
+            jobs_to_archive.append(job)
 
     if not jobs_to_archive:
         # Bail, nothing to do here
@@ -406,12 +452,24 @@ def main():
                                             description='For detailed subcommand help run: <subcommand> -h.')
 
     details_parser = command_parsers.add_parser('details', help='Show details of my jobs.')
-    details_parser.add_argument('-f', '--failed-since',
-                                help='Print all failed commands after FAILED_SINCE. ' + timedelta_help)
-    # noinspection PyTypeChecker
-    details_parser.add_argument('-l', '--limit-output', default=50, type=int,
-                                help='Limit output to this many lines (default: 50). '
-                                     'Does not apply if printing failed jobs.')
+    details_parser.add_argument('-r', '--print-running', action='store_true',
+                                help='Print running jobs.')
+    details_parser.add_argument('-q', '--print-queued', action='store_true',
+                                help='Print queued jobs.')
+    details_parser.add_argument('-c', '--print-completed', action='store_true',
+                                help='Print completed jobs.')
+    details_parser.add_argument('-f', '--print-failed', action='store_true',
+                                help='Print failed jobs.')
+    details_parser.add_argument('-l', '--limit-output', default='50',
+                                help='Limit output to either: number of lines, Job ID or time delta (2w, 3h or 1d). '
+                                     'The default is 50 lines. '
+                                     'Job ID can be in a form of range (i.e. 28327149-28327165). '
+                                     'Time delta unit can be one of: h(hours), d(days) or w(weeks).')
+    details_parser.add_argument('-o', '--output', default='table',
+                                help='Choose how to display output: table, jobid or cmd (default: table). '
+                                     'TABLE dislays all available information about the job. '
+                                     'JOBID displays space-separated job IDs which is useful for deleting jobs. '
+                                     'CMD displays the commands which is useful for resubmitting jobs.')
     details_parser.set_defaults(func=details)
 
     archive_parser = command_parsers.add_parser('archive', help='Archive finished jobs.')
