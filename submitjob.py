@@ -12,9 +12,9 @@ PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 
 
 def _sanitize_cmd(bit):
-    if "'" in bit and not re.match("^($|'|\")", bit):
+    if "'" in bit and not re.search("^($|'|\")", bit):
         return '"%s"' % (bit,)
-    elif re.match(r"[${[\]!} ]", bit) and "'" not in bit:
+    elif re.search(r"[${[\]!} ]", bit) and "'" not in bit:
         return "'%s'" % (bit,)
     elif bit == "awkt":
         return "awk -F '\t' -v OFS='\t'"
