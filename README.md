@@ -34,9 +34,20 @@ $ python submitjob.py -E m.usaj@utoronto.ca <command>
 
 generate a list of all failed jobs in the past 31days:
 ```bash
-$ python jobstatus.py details -f 31d > failed_this_month.txt
-$ # You can then use this file to re-submit failed jobs (possibly with adjusted resource requirements)
+# -f -> print failed jobs; -l 64d -> limit printed jobs to last 64d(ays); `-o cmd` -> print commands
+$ python jobstatus.py details -f -l 64d -o cmd > failed_this_month.txt
+# You can then use this file to re-submit failed jobs (possibly with adjusted resource requirements)
 $ python submitjob.py -f failed_this_month.txt
+```
+
+delete all queued jobs:
+```bash
+$ python jobstatus.py details -q -o jobid
+28833598 28831572 28816963 28816962
+$ qdel 28833598 28831572 28816963 28816962
+
+# or in one line:
+$ python jobstatus.py details -q -o jobid | xargs qdel
 ```
 
 clean up pbs-output and pbs_log, keep only jobs that are at most 2 weeks old:
