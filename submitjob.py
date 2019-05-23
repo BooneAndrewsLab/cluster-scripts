@@ -133,6 +133,8 @@ def main():
                         help='Where to log submitted jobs.')
     parser.add_argument('-E', '-email', '--email', default=None,
                         help='Send an email to this address when a job ends or is aborted')
+    parser.add_argument('-n', '-name', '--name', default=None,
+                        help='Give submitted job(s) a verbose name.')
 
     args = parser.parse_args()
 
@@ -153,7 +155,7 @@ def main():
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
 
-        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email)
+        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email, job_name=args.name)
         print(prefix + job_id)
 
         if not args.disable_log:

@@ -23,6 +23,8 @@ PBS_PATH = os.path.join(HOME, 'pbs-output')
 PBS_ARCHIVE_PATH = os.path.join(PBS_PATH, 'archive')
 USER_LABEL = '*%s' % (USER,)
 
+RE_DC = re.compile(r'.+[.]o(\d+)')
+
 
 class JobStatusError(Exception):
     """Custom error thrown by jobstatus code"""
@@ -166,10 +168,12 @@ def read_pbs_output(jobs=None):
 
     for out in os.listdir(PBS_PATH):
         # Parse only job files ending with:
-        if not out.endswith('.bc.ccbr.utoronto.ca.OU'):
+        if out.endswith('.bc.ccbr.utoronto.ca.OU'):  # banting cluster
+            job_id = out[:-3]  # remove .OU
+        elif RE_DC.match(out):  # DC cluster... ie: python.o70
+            job_id = '%s.dc01.ccbr.utoronto.ca' % RE_DC.match(out).group(1)
+        else:
             continue
-
-        job_id = out[:-3]  # remove .OU
 
         # Set ctime of the output file as execution end time
         out_data = {'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out))),
