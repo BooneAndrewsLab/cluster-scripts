@@ -15,9 +15,6 @@ if not WIDTH:
 
 UP_STATES = {"job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"}
 
-HOME = os.getenv("HOME")
-USER = os.getenv("USER")
-
 
 class NodeStatusError(Exception):
     """Custom error thrown by nodestatus code"""
@@ -197,7 +194,7 @@ def check_status(args):
     output = []
 
     for node, node_data in sorted(nodes.items()):  # , key=lambda x: (not x[1]['up'], x[1]['state'], x[0])
-        node_name = node.replace('.ccbr.utoronto.ca', '')
+        node_name = node.split('.')[0]
         jobs = job_map.get(node, [])
         job_mem = sum([job.rmem for job in jobs])
 
@@ -247,7 +244,7 @@ def check_status(args):
     row_format = ' | '.join(
         ['%%%ds' % (s if sidx != len(column_sizes) - 1 else -s) for sidx, s in enumerate(column_sizes)])
     header = header_format % headers
-    print(header)
+
     print('-' * len(header))
     for output_row in output:
         print(row_format % tuple(output_row))
