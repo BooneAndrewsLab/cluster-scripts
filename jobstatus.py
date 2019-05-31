@@ -5,6 +5,7 @@ import os
 import random
 import re
 import sys
+import xml.etree.ElementTree as Et
 from collections import defaultdict
 from datetime import datetime, timedelta
 from subprocess import Popen, PIPE
@@ -219,36 +220,42 @@ def read_pbs_log(jobs=None):
     return jobs
 
 
-def read_qstat_detailed(jobs=None):
-    """Parse qstat -f output to get the most details about queued/running jobs of the user that executes this script.
+def read_qstatx(jobs=None):
+    """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this script.
     Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
     resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
+    This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
 
     :return: Parsed jobs from qstat output
     :rtype: dict
     """
-    proc = Popen('qstat -f', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
+    proc = Popen('qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
         raise Exception("Can't run qstat: %s" % err)
 
     jobs = jobs if jobs is not None else JobList()
 
-    job_re = re.compile(r"Job Id:[\s\S]*?(?=\nJob Id:|$)")  # Regex that parses each "Job Id" block
-    job_param_re = re.compile(r'[ ]{4}[\s\S]*?(?=\n[ ]{4}|$)')  # Regex that parses key=value pairs from Job Id block
+    root = Et.fromstring(qstat)
+    for job_ele in root:
+        job = {attr.tag: attr.text for attr in job_ele}
+        if job.get('euser') == 'matej':
+            for ts in ['qtime', 'mtime', 'ctime', 'etime']:
+                if ts in job:
+                    job[ts] = datetime.fromtimestamp(int(job[ts]))
 
-    for job in job_re.findall(qstat):
-        job_id = job[8:job.index('\n')]
-        job_data = dict([kv.strip().replace('\n\t', '').split(' = ') for kv in job_param_re.findall(job)])
-        job_data['qstat'] = True
-        if job_data['euser'] == USER:  # Store only current user's jobs
-            jobs[job_id] = job_data
+            if 'Resource_List' in job:
+                job.pop('Resource_List')
+                for rl in job_ele.find('Resource_List'):
+                    job['Resource_List.%s' % rl.tag] = rl.text
+
+            jobs[job['Job_Id']] = job
 
     return jobs
 
 
 def read_all():
-    jobs = read_qstat_detailed()
+    jobs = read_qstatx()
     read_pbs_log(jobs)
     read_pbs_output(jobs)
 
