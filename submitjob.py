@@ -48,6 +48,11 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :return: Job id returned by qsub.
     :rtype: str
     """
+
+    # Create output dir if it does not exist yet
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+
     walltime = '%02d:%02d:00' % (walltime, 60 * (walltime % 1))
     memory = '%dM' % (1024 * mem,)
     cpu = '%d' % (cpu,)
