@@ -20,94 +20,64 @@ class NodeStatusError(Exception):
     """Custom error thrown by nodestatus code"""
 
 
-class Job(dict):
-    """Simple class extending a dictionary with convenient functions for job details retrieval"""
+class Node:
+    def __init__(self, nodeele):
+        node = {attr.tag: attr.text for attr in nodeele}
+        status = dict([kv.split('=') for kv in node['status'].split(',')]) if 'status' in node else {}
+        print(status)
 
     @property
-    def cmd(self):
-        return self.get('log_cmd', '').strip('"') or self.get('Run command') or '-'
-
-    def cmd_trucated(self, length=32):
-        cmd = self.cmd
-        if len(cmd) > length:
-            cmd = cmd[:length - 3] + '...'
-        return cmd
+    def name(self):
+        return self['name'].split('.')[0]
 
     @property
-    def job_id(self):
-        return self['job_id']
+    def res_cpus(self):
+        return sum([len(job['execs']) for job in self['jobs']])
 
     @property
-    def exit_status(self):
-        return self.get('Exit status', '-')
+    def all_cpus(self):
+        return int(self.get('np', '0'))
 
     @property
-    def state(self):
-        if self.exit_status not in ('-', '0'):
-            return 'Failed'
-
-        s = self.get('job_state', 'Completed' if 'Execution host' in self else '?')
-        if 'queue' in self:
-            s += ' (%s)' % self['queue']
-
-        return s
+    def states(self):
+        return set(self['state'].split(','))
 
     @property
-    def start(self):
-        if 'log_start_time' in self:
-            return self['log_start_time'].strftime('%Y-%m-%d %H:%M:%S')
-        return ''
+    def up(self):
+        return len(UP_STATES.intersection(self.states)) > 0
 
     @property
-    def runtime(self):
-        if 'Resource_List.walltime' in self:
-            return '%s/%sh' % (
-                self.get('resources_used.walltime', '00:00:00').split(':')[0],
-                self['Resource_List.walltime'].split(':')[0]
-            )
-        elif 'walltime' in self:
-            return self['walltime']
-        return ''
+    def res_mem(self):
+        return sum([job.rmem for job in self['jobs']])
 
     @property
-    def rmem(self):
-        return float(self.get('Resource_List.mem', '0mb')[:-2]) / 1024
-
-    @property
-    def memory(self):
-        if 'Resource_List.mem' in self:
-            mem = float(self.get('resources_used.mem', '0kb')[:-2]) / (1024 * 1024)
-            rmem = float(self.get('Resource_List.mem', '0mb')[:-2]) / 1024
-
-            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem * 100)
-        elif 'mem' in self:
-            # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
-            # so the job details are continued on the same line and not parsed
-            return self['mem']
-        return ''
+    def all_mem(self):
+        return int(self.get('physmem', '0kb')[:-2]) / 1024. / 1024.
 
 
-class JobList(dict):
-    """Modified dictionary that updates existing job data on item set"""
-
-    def __setitem__(self, key, value):
-        if key not in self:
-            super(JobList, self).__setitem__(key, Job(value))
-            self[key]['job_id'] = int(key.split('.')[0])
-        else:
-            self.__getitem__(key).update(value)
-
-    def __getitem__(self, item):
-        if isinstance(item, slice):
-            return sorted(self.values(), key=lambda x: x.job_id, reverse=True)[item].__iter__()
-
-        return super(JobList, self).__getitem__(item)
-
-    def __iter__(self):
-        return sorted(self.values(), key=lambda x: x.job_id, reverse=True).__iter__()
+class Job:
+    def __init__(self, jobele):
+        job = {attr.tag: attr.text for attr in jobele}
+        self.job_id = job['Job_Id'].split('.')[0]
+        self.user = job['euser']
+        self.node = None
+        if job.get('exec_host'):
+            self.node = job['exec_host'].split('.')[0]
 
 
-def read_qstatx(jobs=None):
+def read_xml(cmd):
+    proc = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
+    qstat, err = proc.communicate()
+    if err:
+        raise Exception("Can't run %s: %s" % (cmd, err))
+
+    if not qstat:
+        return []
+
+    return Et.fromstring(qstat)
+
+
+def read_qstatx():
     """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this script.
     Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
     resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
@@ -116,69 +86,48 @@ def read_qstatx(jobs=None):
     :return: Parsed jobs from qstat output
     :rtype: dict
     """
-    proc = Popen('qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
-    qstat, err = proc.communicate()
-    if err:
-        raise Exception("Can't run qstat: %s" % err)
+    jobs = {}
 
-    if not qstat:
-        return {}
+    root = read_xml('qstat -x')
+    for job in map(Job, root):
+        jobs[job.job_id] = job
 
-    jobs = jobs if jobs is not None else JobList()
-
-    root = Et.fromstring(qstat)
-    for job_ele in root:
-        job = {attr.tag: attr.text for attr in job_ele}
-        for ts in ['qtime', 'mtime', 'ctime', 'etime']:
-            if ts in job:
-                job[ts] = datetime.fromtimestamp(int(job[ts]))
-
-        for sub in ['Resource_List', 'resources_used']:
-            if sub in job:
-                job.pop(sub)
-                for rl in job_ele.find(sub):
-                    job['%s.%s' % (sub, rl.tag)] = rl.text
-
-        jobs[job['Job_Id']] = job
-
-    job_map = defaultdict(list)
-    for job in jobs:
-        execs = job.get('exec_host', '').split('+')
-        job['execs'] = execs
-        job_map[execs[0].split('/')[0]].append(job)
-
-    return job_map
+    return jobs
 
 
-def read_nodes():
+def read_nodes(jobs):
     """
-
     :return:
-    :rtype: dict
+    :rtype: list
     """
-    proc = Popen('pbsnodes -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
-                 universal_newlines=True)
-    pbsnodes, err = proc.communicate()
-    if err:
-        raise Exception("Can't run pbsnodes: %s" % err)
+    root = read_xml('pbsnodes -x')
+    for node in map(Node, root):
+        pass
 
-    nodes = {}
-
-    root = Et.fromstring(pbsnodes)
-    for node_ele in root:
-        node = {attr.tag: attr.text for attr in node_ele}
-        node['state'] = node['state'].split(',')
-
-        if 'status' in node:
-            for k, v in [kv.split('=') for kv in node['status'].split(',')]:
-                if k not in node:
-                    node[k] = v
-            node.pop('status')
-
-        node['up'] = len(UP_STATES.intersection(node['state'])) > 0
-        nodes[node['name']] = node
-
-    return nodes
+    # for node_ele in root:
+    #     node = Node({attr.tag: attr.text for attr in node_ele})
+    #
+    #     if 'status' in node:
+    #         for k, v in [kv.split('=') for kv in node['status'].split(',')]:
+    #             if k not in node:
+    #                 node[k] = v
+    #         node.pop('status')
+    #
+    #     job_list = jobs.get(node['name'], [])
+    #     if node['jobs']:
+    #         for job in node['jobs'].split(','):
+    #             print(job)
+    #             job_id = int(job.split('/')[1].split('.')[0])
+    #             if job_id not in jobs:
+    #                 node.setdefault('orphans', set()).add(job_id)
+    #             else:
+    #                 job_list.append(jobs[job_id])
+    #
+    #     node['jobs'] = job_list
+    #
+    #     nodes.append(node)
+    #
+    # return sorted(nodes, key=lambda n: n.name)
 
 
 def check_status(args):
@@ -188,73 +137,71 @@ def check_status(args):
     :type args: argparse.Namespace
     """
     job_map = read_qstatx()
-    nodes = read_nodes()
+    node_list = read_nodes(job_map)
+    nodes = []
 
-    headers = ('Node', 'Status', 'Load', 'Used cores', 'Used memory', 'Jobs')
-    output = []
-
-    for node, node_data in sorted(nodes.items()):  # , key=lambda x: (not x[1]['up'], x[1]['state'], x[0])
-        node_name = node.split('.')[0]
-        jobs = job_map.get(node, [])
-        job_mem = sum([job.rmem for job in jobs])
-
-        node_jobs = []
-        if 'jobs' in node_data:
-            node_jobs = node_data.get('jobs', '').split(',')
-        phys_mem = int(node_data.get('physmem', '0kb')[:-2]) / 1024. / 1024.
-        all_cpus = int(node_data.get('ncpus', '0'))
-
-        row = [
-            node_name,
-            ','.join(node_data['state']),
-            node_data['loadave'],  # Load
-            "%3d/%3d (%3d%%)" % (len(node_jobs), all_cpus, 1. * len(node_jobs) / all_cpus * 100.),  # Cores
-            "%5.1f/%5.1fG (%3d%%)" % (job_mem, phys_mem, job_mem / phys_mem * 100.),  # Memory
-        ]
-
-        if args.print_job_details:
-            for jidx, job in enumerate(jobs):
-                job_val = '%s %s walltime=%s memory=%s cores=%s' % (
-                    job['euser'],
-                    job['job_id'],
-                    job.runtime,
-                    job.memory,
-                    job['Resource_List.nodes'].split('=')[-1]
-                )
-
-                if jidx == 0:
-                    output.append(row + [job_val])
-                else:
-                    output.append(([''] * len(row)) + [job_val])
+    if args.filter_states:
+        states = args.filter_states.lower().split(',')
+        if 'down' in states:
+            node_list = filter(lambda x: not x.up, node_list)
         else:
-            output.append(row + [','.join([str(j.job_id) for j in jobs])])
+            node_list = filter(lambda x: x.states.intersection(states), node_list)
+
+    for node in node_list:
+        nodes.append([
+            node.name,
+            node.get('state', 'N/A'),
+            node.get('loadave', '0'),
+            "%3d/%3d (%3d%%)" % (node.res_cpus, node.all_cpus, 1. * node.res_cpus / node.all_cpus * 100.),  # Cores
+            "%5.1f/%5.1fG (%3d%%)" % (
+                node.res_mem, node.all_mem, node.res_mem / node.all_mem * 100.) if node.all_mem else 'N/A',  # Memory
+            ''.join(('*' * node.res_cpus) + ('-' * (node.all_cpus - node.res_cpus)))
+        ])
+
+        if args.show_job_owners:
+            nodes[-1][-1] = ''
+            empty = [''] * 5
+
+            users = defaultdict(list)
+            for job in node['jobs']:
+                users[job['euser']].append(job)
+            for orphan in node.get('orphans', []):
+                users['ORPHANS'].append(orphan)
+
+            for idx, uitem in enumerate(users.items()):
+                u, jobs = uitem
+                column_data = '%s: %s' % (u, ' '.join([str(j.job_id) for j in jobs]))
+
+                if idx:
+                    nodes.append(empty + [column_data])
+                else:
+                    nodes[-1][-1] = column_data
 
     # Printing bits
-    column_sizes = [0] * len(headers)
-    for output_row in output:
-        for cidx, cell in enumerate(output_row):
-            column_sizes[cidx] = max(column_sizes[cidx], len(cell))
+    headers = ('Node', 'Status', 'Load', 'Used cores', 'Used memory', 'Jobs')
+    sizes = [max(map(len, col)) for col in zip(headers, *nodes)]  # Find optimal column size
+    columns = ['%%-%ds' % s for s in sizes]
 
-    free_space = max(WIDTH - (sum(column_sizes) + (3 * (len(column_sizes) - 1))), 0)
+    # Pad last column with leftover space
+    out_len = ' | '.join(columns[:-1]) % headers[:-1]
+    free_space = max(32, WIDTH - 3 - len(out_len))
+    columns[-1] = '%%-%ds' % free_space
 
-    column_sizes[-1] += free_space
+    columns_format = ' | '.join(columns)
+    header = columns_format % headers
+    print(header)
+    print('=' * len(header))
 
-    header_format = ' | '.join(['%%-%ds' % s for s in column_sizes])
-    # Align last column to the left, the rest are to the right
-    row_format = ' | '.join(
-        ['%%%ds' % (s if sidx != len(column_sizes) - 1 else -s) for sidx, s in enumerate(column_sizes)])
-    header = header_format % headers
-
-    print('-' * len(header))
-    for output_row in output:
-        print(row_format % tuple(output_row))
+    for node in nodes:
+        print(columns_format % tuple(node))
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Check nodes status.')
-    parser.add_argument('-d', '--list-job-details', dest='print_job_details', action='store_true',
-                        help='List jobs running on nodes')
+    parser.add_argument('-o', '--show-job-owners', action='store_true', help='List jobs running on nodes')
+    parser.add_argument('-s', '--filter-states', help='Display only nodes in FILTER_STATES (comma separated). '
+                                                      'Can use "DOWN" for any offline state.')
     args = parser.parse_args()
 
     try:
