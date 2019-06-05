@@ -5,8 +5,6 @@ import xml.etree.ElementTree as Et
 from collections import defaultdict
 from subprocess import Popen, PIPE
 
-HOME = os.getenv("HOME")
-USER = os.getenv("USER")
 WIDTH = os.getenv("COLUMNS")
 
 if not WIDTH:
@@ -15,10 +13,6 @@ if not WIDTH:
 
 UP_STATES = {"job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"}
 RE_JOB = re.compile(r'(\d+/)?(\d+)[.].+')
-
-
-class NodeStatusError(Exception):
-    """Custom error thrown by nodestatus code"""
 
 
 class Node:
@@ -173,11 +167,7 @@ def main():
     parser.add_argument('-s', '--filter-states', help='Display only nodes in FILTER_STATES (comma separated).')
     args = parser.parse_args()
 
-    try:
-        check_status(args)
-    except NodeStatusError as e:
-        # Fail gracefully only for known errors
-        parser.error(str(e))
+    check_status(args)
 
 
 if __name__ == '__main__':
