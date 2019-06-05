@@ -5,12 +5,14 @@ import xml.etree.ElementTree as Et
 from collections import defaultdict
 from subprocess import Popen, PIPE
 
+# Get terminal width for nicer printing
 WIDTH = os.getenv("COLUMNS")
 
 if not WIDTH:
     with os.popen('stty size', 'r') as ttyin:
         _, WIDTH = map(int, ttyin.read().split())
 
+# Some useful constants
 UP_STATES = {"job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"}
 RE_JOB = re.compile(r'(\d+/)?(\d+)[.].+')
 
@@ -21,6 +23,11 @@ class Node:
     mem_res = 0
 
     def __init__(self, nodeele):
+        """ Object representing one node, as parsed from pbsnodes output
+
+        :param nodeele: Node details from pbsnodes
+        :type nodeele: Et.Element
+        """
         node = {attr.tag: attr.text for attr in nodeele}
         status = dict([kv.split('=') for kv in node['status'].split(',')]) if 'status' in node else {}
 
@@ -39,6 +46,13 @@ class Node:
         self.is_up = len(UP_STATES.intersection(self.state_set)) > 0
 
     def grab_own_jobs(self, jobs):
+        """ Iterate through the job list and adopt jobs that are executing on this nodes.
+
+        :param jobs: Jobs read from qstat
+        :type jobs: dict[str, Job]
+        :return: Reference to this node for chaining purposes.
+        :rtype: Node
+        """
         self.jobs_qstat = [j for j in jobs.values() if j.node == self.name]
         self.mem_res = sum([j.mem for j in self.jobs_qstat])
         self.orphans = [jobs[j] for j in self.jobs_node if not jobs[j].node]
@@ -47,6 +61,11 @@ class Node:
 
 class Job:
     def __init__(self, jobele):
+        """ Object representing one Job as parsed from qstat output
+
+        :param jobele: Job details from qstat
+        :type jobele: Et.Element
+        """
         job = {attr.tag: attr.text for attr in jobele}
         resources = {r.tag: r.text for r in jobele.find('Resource_List')}
 
@@ -59,6 +78,13 @@ class Job:
 
 
 def read_xml(cmd):
+    """ Execute cmd and parse the output XML
+
+    :param cmd: Command to run
+    :type cmd: str
+    :return: List of children elements in xml root
+    :rtype: list[Et.Element]
+    """
     proc = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
@@ -70,40 +96,56 @@ def read_xml(cmd):
     return Et.fromstring(qstat)
 
 
-def read_qstatx():
-    """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this script.
-    Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
-    resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
-    This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
+def read_qstat():
+    """ Parse qstat -x output to get the most details about queued/running jobs of the user that executes this script.
 
     :return: Parsed jobs from qstat output
-    :rtype: dict
+    :rtype: dict[str, Job]
     """
-    jobs = {}
-
-    root = read_xml('qstat -x')
-    for job in map(Job, root):
-        jobs[job.job_id] = job
-
-    return jobs
+    return {j.job_id: j for j in map(Job, read_xml('qstat -x'))}
 
 
 def read_nodes(jobs):
+    """ Parse pbsnodes -x output to get node details.
+
+    :return: List of nodes
+    :rtype: list[Node]
     """
-    :return:
-    :rtype: list
+    return sorted([node.grab_own_jobs(jobs) for node in map(Node, read_xml('pbsnodes -x'))], key=lambda n: n.name)
+
+
+def print_table(headers, data):
+    """ Print a table in terminal, properly padded
+
+    :param headers: Table headers
+    :param data: Table data
+    :type headers: list[str]
+    :type data: list[list]
     """
-    root = read_xml('pbsnodes -x')
-    return sorted([node.grab_own_jobs(jobs) for node in map(Node, root)], key=lambda n: n.name)
+    sizes = [max(map(len, col)) for col in zip(headers, *data)]  # Find optimal column size
+    columns = ['%%-%ds' % s for s in sizes]
+
+    # Pad last column with leftover space
+    out_len = ' | '.join(columns[:-1]) % tuple(headers[:-1])
+    free_space = max(32, WIDTH - 3 - len(out_len))
+    columns[-1] = '%%-%ds' % free_space
+    columns_format = ' | '.join(columns)
+    header = columns_format % tuple(headers)
+
+    print(header)
+    print('=' * len(header))
+
+    for node in data:
+        print(columns_format % tuple(node))
 
 
 def check_status(args):
-    """Print job details for current user. Output format can be fine-tuned with args argument.
+    """ Print node details
 
     :param args: Arguments from argparse
     :type args: argparse.Namespace
     """
-    job_map = read_qstatx()
+    job_map = read_qstat()
     node_list = read_nodes(job_map)
     nodes = []
 
@@ -142,25 +184,12 @@ def check_status(args):
                     nodes[-1][-1] = column_data
 
     # Printing bits
-    headers = ('Node', 'Status', 'Load', 'Used cores', 'Used memory', 'Jobs')
-    sizes = [max(map(len, col)) for col in zip(headers, *nodes)]  # Find optimal column size
-    columns = ['%%-%ds' % s for s in sizes]
-
-    # Pad last column with leftover space
-    out_len = ' | '.join(columns[:-1]) % headers[:-1]
-    free_space = max(32, WIDTH - 3 - len(out_len))
-    columns[-1] = '%%-%ds' % free_space
-
-    columns_format = ' | '.join(columns)
-    header = columns_format % headers
-    print(header)
-    print('=' * len(header))
-
-    for node in nodes:
-        print(columns_format % tuple(node))
+    print_table(['Node', 'Status', 'Load', 'Used cores', 'Used memory', 'Jobs'], nodes)
 
 
 def main():
+    """ Execute main program
+    """
     import argparse
     parser = argparse.ArgumentParser(description='Check nodes status.')
     parser.add_argument('-o', '--show-job-owners', action='store_true', help='List jobs running on nodes')
