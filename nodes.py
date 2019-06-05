@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 import os
+import re
 import xml.etree.ElementTree as Et
 from collections import defaultdict
-from datetime import datetime
 from subprocess import Popen, PIPE
 
 HOME = os.getenv("HOME")
@@ -14,6 +14,7 @@ if not WIDTH:
         _, WIDTH = map(int, ttyin.read().split())
 
 UP_STATES = {"job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"}
+RE_JOB = re.compile(r'(\d+/)?(\d+)[.].+')
 
 
 class NodeStatusError(Exception):
@@ -21,45 +22,43 @@ class NodeStatusError(Exception):
 
 
 class Node:
+    jobs_qstat = []
+    orphans = []
+    mem_res = 0
+
     def __init__(self, nodeele):
         node = {attr.tag: attr.text for attr in nodeele}
         status = dict([kv.split('=') for kv in node['status'].split(',')]) if 'status' in node else {}
-        print(status)
 
-    @property
-    def name(self):
-        return self['name'].split('.')[0]
+        self.name = node['name'].split('.')[0]
+        jobs = [RE_JOB.match(j).group(2) for j in node.get('jobs', '').split(',') if RE_JOB.match(j)]
+        self.jobs_node = set(jobs)
 
-    @property
-    def res_cpus(self):
-        return sum([len(job['execs']) for job in self['jobs']])
+        self.cpu_all = int(node.get('np', '0'))
+        self.cpu_res = len(jobs)
 
-    @property
-    def all_cpus(self):
-        return int(self.get('np', '0'))
+        self.mem_all = int(status.get('physmem', '0kb')[:-2]) / 1024. / 1024.
+        self.load = status.get('loadave', '0')
 
-    @property
-    def states(self):
-        return set(self['state'].split(','))
+        self.states = node.get('state', 'N/A')
+        self.state_set = set(self.states.split(','))
+        self.is_up = len(UP_STATES.intersection(self.state_set)) > 0
 
-    @property
-    def up(self):
-        return len(UP_STATES.intersection(self.states)) > 0
-
-    @property
-    def res_mem(self):
-        return sum([job.rmem for job in self['jobs']])
-
-    @property
-    def all_mem(self):
-        return int(self.get('physmem', '0kb')[:-2]) / 1024. / 1024.
+    def grab_own_jobs(self, jobs):
+        self.jobs_qstat = [j for j in jobs.values() if j.node == self.name]
+        self.mem_res = sum([j.mem for j in self.jobs_qstat])
+        self.orphans = [jobs[j] for j in self.jobs_node if not jobs[j].node]
+        return self
 
 
 class Job:
     def __init__(self, jobele):
         job = {attr.tag: attr.text for attr in jobele}
+        resources = {r.tag: r.text for r in jobele.find('Resource_List')}
+
         self.job_id = job['Job_Id'].split('.')[0]
         self.user = job['euser']
+        self.mem = int(resources['mem'][:-2]) / 1024.
         self.node = None
         if job.get('exec_host'):
             self.node = job['exec_host'].split('.')[0]
@@ -101,33 +100,7 @@ def read_nodes(jobs):
     :rtype: list
     """
     root = read_xml('pbsnodes -x')
-    for node in map(Node, root):
-        pass
-
-    # for node_ele in root:
-    #     node = Node({attr.tag: attr.text for attr in node_ele})
-    #
-    #     if 'status' in node:
-    #         for k, v in [kv.split('=') for kv in node['status'].split(',')]:
-    #             if k not in node:
-    #                 node[k] = v
-    #         node.pop('status')
-    #
-    #     job_list = jobs.get(node['name'], [])
-    #     if node['jobs']:
-    #         for job in node['jobs'].split(','):
-    #             print(job)
-    #             job_id = int(job.split('/')[1].split('.')[0])
-    #             if job_id not in jobs:
-    #                 node.setdefault('orphans', set()).add(job_id)
-    #             else:
-    #                 job_list.append(jobs[job_id])
-    #
-    #     node['jobs'] = job_list
-    #
-    #     nodes.append(node)
-    #
-    # return sorted(nodes, key=lambda n: n.name)
+    return sorted([node.grab_own_jobs(jobs) for node in map(Node, root)], key=lambda n: n.name)
 
 
 def check_status(args):
@@ -141,21 +114,18 @@ def check_status(args):
     nodes = []
 
     if args.filter_states:
-        states = args.filter_states.lower().split(',')
-        if 'down' in states:
-            node_list = filter(lambda x: not x.up, node_list)
-        else:
-            node_list = filter(lambda x: x.states.intersection(states), node_list)
+        states = set(args.filter_states.lower().split(','))
+        node_list = filter(lambda x: not states.difference(x.state_set), node_list)
 
     for node in node_list:
         nodes.append([
             node.name,
-            node.get('state', 'N/A'),
-            node.get('loadave', '0'),
-            "%3d/%3d (%3d%%)" % (node.res_cpus, node.all_cpus, 1. * node.res_cpus / node.all_cpus * 100.),  # Cores
+            node.states,
+            node.load,
+            "%3d/%3d (%3d%%)" % (node.cpu_res, node.cpu_all, 1. * node.cpu_res / node.cpu_all * 100.),  # Cores
             "%5.1f/%5.1fG (%3d%%)" % (
-                node.res_mem, node.all_mem, node.res_mem / node.all_mem * 100.) if node.all_mem else 'N/A',  # Memory
-            ''.join(('*' * node.res_cpus) + ('-' * (node.all_cpus - node.res_cpus)))
+                node.mem_res, node.mem_all, node.mem_res / node.mem_all * 100.) if node.mem_all else 'N/A',  # Memory
+            ''.join(('*' * node.cpu_res) + ('-' * (node.cpu_all - node.cpu_res)))
         ])
 
         if args.show_job_owners:
@@ -163,9 +133,9 @@ def check_status(args):
             empty = [''] * 5
 
             users = defaultdict(list)
-            for job in node['jobs']:
-                users[job['euser']].append(job)
-            for orphan in node.get('orphans', []):
+            for job in node.jobs_qstat:
+                users[job.user].append(job)
+            for orphan in node.orphans:
                 users['ORPHANS'].append(orphan)
 
             for idx, uitem in enumerate(users.items()):
@@ -200,8 +170,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='Check nodes status.')
     parser.add_argument('-o', '--show-job-owners', action='store_true', help='List jobs running on nodes')
-    parser.add_argument('-s', '--filter-states', help='Display only nodes in FILTER_STATES (comma separated). '
-                                                      'Can use "DOWN" for any offline state.')
+    parser.add_argument('-s', '--filter-states', help='Display only nodes in FILTER_STATES (comma separated).')
     args = parser.parse_args()
 
     try:
