@@ -12,8 +12,8 @@ if not WIDTH:
     with os.popen('stty size', 'r') as ttyin:
         _, WIDTH = map(int, ttyin.read().split())
 
-# Some useful constants
-UP_STATES = {"job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"}
+# Some useful constants, python 2.6 compatible
+UP_STATES = set(("job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"))
 RE_JOB = re.compile(r'(\d+/)?(\d+)[.].+')
 
 
@@ -28,7 +28,7 @@ class Node:
         :param nodeele: Node details from pbsnodes
         :type nodeele: Et.Element
         """
-        node = {attr.tag: attr.text for attr in nodeele}
+        node = dict([(attr.tag, attr.text) for attr in nodeele])  # python 2.6 compat
         status = dict([kv.split('=') for kv in node['status'].split(',')]) if 'status' in node else {}
 
         self.name = node['name'].split('.')[0]
@@ -66,8 +66,8 @@ class Job:
         :param jobele: Job details from qstat
         :type jobele: Et.Element
         """
-        job = {attr.tag: attr.text for attr in jobele}
-        resources = {r.tag: r.text for r in jobele.find('Resource_List')}
+        job = dict([(attr.tag, attr.text) for attr in jobele])  # python 2.6 compat
+        resources = dict([(r.tag, r.text) for r in jobele.find('Resource_List')])  # python 2.6 compat
 
         self.job_id = job['Job_Id'].split('.')[0]
         self.user = job['euser']
@@ -102,7 +102,7 @@ def read_qstat():
     :return: Parsed jobs from qstat output
     :rtype: dict[str, Job]
     """
-    return {j.job_id: j for j in map(Job, read_xml('qstat -x'))}
+    return dict([(j.job_id, j) for j in map(Job, read_xml('qstat -x'))])  # python 2.6 compat
 
 
 def read_nodes(jobs):
@@ -190,6 +190,7 @@ def check_status(args):
 def main():
     """ Execute main program
     """
+    # noinspection PyCompatibility
     import argparse
     parser = argparse.ArgumentParser(description='Check nodes status.')
     parser.add_argument('-o', '--show-job-owners', action='store_true', help='List jobs running on nodes')
