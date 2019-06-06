@@ -111,6 +111,7 @@ echo    '==> Execution host :' `hostname`
 
 
 def main():
+    # noinspection PyCompatibility
     import argparse
     from datetime import datetime
 

@@ -238,7 +238,7 @@ def read_qstatx(jobs=None):
 
     root = Et.fromstring(qstat)
     for job_ele in root:
-        job = {attr.tag: attr.text for attr in job_ele}
+        job = dict([(attr.tag, attr.text) for attr in job_ele])
         if job.get('euser') == 'matej':
             for ts in ['qtime', 'mtime', 'ctime', 'etime']:
                 if ts in job:
@@ -451,6 +451,7 @@ def main():
         print_all_jobs()
         return
 
+    # noinspection PyCompatibility
     import argparse
     timedelta_help = 'Must be either a date (YYYY-MM-DD), Job ID (numeric part) or a time delta (2w, 3h or 1d). ' \
                      'Time delta unit can be one of: h(hours), d(days) or w(weeks)'
