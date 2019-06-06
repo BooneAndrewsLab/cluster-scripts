@@ -102,7 +102,7 @@ def read_qstat():
     :return: Parsed jobs from qstat output
     :rtype: dict[str, Job]
     """
-    return dict([(j.job_id, j) for j in map(Job, read_xml('qstat -x'))])  # python 2.6 compat
+    return dict([(j.job_id, j) for j in map(Job, read_xml('/usr/bin/qstat -x'))])  # python 2.6 compat
 
 
 def read_nodes(jobs):

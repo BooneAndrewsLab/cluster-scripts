@@ -12,7 +12,7 @@ def main():
         print("This script can not run by root!")
         exit(1)
 
-    proc = Popen('qstat -u %s' % USER, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+    proc = Popen('/usr/bin/qstat -u %s' % USER, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
     qstat, err = proc.communicate()
     if err:

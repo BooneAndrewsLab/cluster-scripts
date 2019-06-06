@@ -229,7 +229,7 @@ def read_qstatx(jobs=None):
     :return: Parsed jobs from qstat output
     :rtype: dict
     """
-    proc = Popen('qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
+    proc = Popen('/usr/bin/qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
         raise Exception("Can't run qstat: %s" % err)
@@ -268,7 +268,7 @@ def read_qstat():
     :return: Job summaries for users, queues and total
     :rtype: tuple[dict, dict, dict]
     """
-    proc = Popen('qstat', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+    proc = Popen('/usr/bin/qstat', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
