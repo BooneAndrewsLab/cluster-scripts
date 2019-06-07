@@ -229,7 +229,8 @@ def read_qstatx(jobs=None):
     :return: Parsed jobs from qstat output
     :rtype: dict
     """
-    proc = Popen('/usr/bin/qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
+    proc = Popen('/usr/bin/qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+                 universal_newlines=True)
     qstat, err = proc.communicate()
     if err:
         raise Exception("Can't run qstat: %s" % err)
@@ -239,7 +240,7 @@ def read_qstatx(jobs=None):
     root = Et.fromstring(qstat)
     for job_ele in root:
         job = dict([(attr.tag, attr.text) for attr in job_ele])
-        if job.get('euser') == 'matej':
+        if job.get('euser') == USER:
             for ts in ['qtime', 'mtime', 'ctime', 'etime']:
                 if ts in job:
                     job[ts] = datetime.fromtimestamp(int(job[ts]))
@@ -248,6 +249,11 @@ def read_qstatx(jobs=None):
                 job.pop('Resource_List')
                 for rl in job_ele.find('Resource_List'):
                     job['Resource_List.%s' % rl.tag] = rl.text
+
+            if 'resources_used' in job:
+                job.pop('resources_used')
+                for rl in job_ele.find('resources_used'):
+                    job['resources_used.%s' % rl.tag] = rl.text
 
             jobs[job['Job_Id']] = job
 
