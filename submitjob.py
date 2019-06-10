@@ -147,7 +147,7 @@ def main():
     if not args.command and not args.file:
         parser.error("Missing command to submit")
 
-    if re.search(r'^\d', args.command[0]):
+    if args.command and re.search(r'^\d', args.command[0]):
         parser.error(
             "You are trying to use the obsolete syntax for submitjob. Please run it with --help to see the new usage.")
 
