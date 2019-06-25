@@ -15,6 +15,8 @@ if not WIDTH:
 # Some useful constants, python 2.6 compatible
 UP_STATES = set(("job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"))
 RE_JOB = re.compile(r'(\d+/)?(\d+)[.].+')
+# Adapted from: https://stackoverflow.com/a/14693789
+ANSI_ESC = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 
 
 class Node:
@@ -93,7 +95,7 @@ def read_xml(cmd):
     if not qstat:
         return []
 
-    return Et.fromstring(qstat)
+    return Et.fromstring(ANSI_ESC.sub('', qstat))  # trim any color escape sequences returned by our command
 
 
 def read_qstat():
