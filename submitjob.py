@@ -115,11 +115,36 @@ def main():
     import argparse
     from datetime import datetime
 
+    class CustomHelpFormatter(argparse.RawDescriptionHelpFormatter):
+        """
+        We'd like to have the REMAINDER argument formatted in a nicer way and the epilogue is already formatted
+        """
+        # noinspection PyProtectedMember
+        def _format_args(self, action, default_metavar):
+            if action.nargs == argparse.REMAINDER:
+                get_metavar = self._metavar_formatter(action, default_metavar)
+                return '%s' % get_metavar(1)
+            return super(CustomHelpFormatter, self)._format_args(action, default_metavar)
+
     parser = argparse.ArgumentParser(
         description='Submit a job to queue.',
-        epilog="Job STDERR is merged with STDOUT and redirected to %s/pbs-output/. "
-               "Any job exceeding the run time and memory limits will be killed automatically." % (HOME,))
-    parser.add_argument('command', nargs=argparse.REMAINDER,
+        formatter_class=CustomHelpFormatter,
+        epilog="""Job STDERR is merged with STDOUT and redirected to %s/pbs-output/.
+Any job exceeding the run time and memory limits will be killed automatically.
+
+All options following your command are considered a property of your command, please state the
+submitjob options like walltime, cpu and memory before the command ie:
+
+EXAMPLE #1: submitjob -w 12 -m 5 my_command.py
+\t- walltime is 12 hours
+\t- memory is 5GB
+
+EXAMPLE #2: submitjob my_command.py -w 12 -m 5
+\t- walltime is 24 hours (default)
+\t- memory is 2GB (default) 
+\t- -w and -m options are ignored by submitjob and used by my_command.py""" % (HOME,))
+
+    parser.add_argument('command', nargs=argparse.REMAINDER, metavar='CMD OPTIONS INPUT',
                         help='The command to run on the cluster. Note that any output redirection or pipe symbols '
                              'must be escaped, i.e.   \\> or \\|')
     parser.add_argument('-w', '-walltime', '--walltime', type=float, default=24,
