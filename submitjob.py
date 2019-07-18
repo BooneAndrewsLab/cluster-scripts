@@ -210,6 +210,9 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
                 "Trying to use arguments without batch size. "
                 "Please add -b to define how many arguments should be added to command per submitted job.")
 
+    if args.pretend:  # Don't write log if we don't submit
+        args.disable_log = True
+
     commands = []
 
     if args.command:
@@ -246,7 +249,8 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
         if not args.disable_log:
             args.log_path.write('[%s]\t%s\t"%s"\n' % (datetime.now().isoformat(), job_id, cmd))
 
-        time.sleep(0.1)
+        if not args.pretend:  # we're just printing commands, do it as fast as possible
+            time.sleep(0.1)
 
 
 if __name__ == '__main__':
