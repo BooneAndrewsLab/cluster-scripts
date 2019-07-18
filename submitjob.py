@@ -5,10 +5,19 @@ import re
 import time
 from subprocess import Popen, PIPE
 
+import sys
+
 HOME = os.getenv("HOME")
 PATH = os.getenv('PATH')
 CWD = os.getcwd()
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
+
+
+def batch(iterable, n=1):
+    """ Adapted from https://stackoverflow.com/a/8290508 """
+    size = len(iterable)
+    for ndx in range(0, size, n):
+        yield iterable[ndx:min(ndx + n, size)]
 
 
 def _sanitize_cmd(bit):
@@ -24,7 +33,8 @@ def _sanitize_cmd(bit):
     return bit
 
 
-def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None):
+def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None,
+           pretend=False):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
@@ -36,6 +46,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :param output_dir: Where to save job output. Default is $HOME/pbs-output
     :param path: Job's PATH. Default is $PATH.
     :param job_name: Name of the job as displayed by qstat. Default is command name, ie: awk
+    :param pretend: Don't submit job to qsub, just print it out instead
     :type cmd: str
     :type walltime: float
     :type mem: float
@@ -45,6 +56,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :type output_dir: str
     :type path: str
     :type job_name: str
+    :type pretend: bool
     :return: Job id returned by qsub.
     :rtype: str
     """
@@ -72,9 +84,10 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
         job_name = job_name.replace('&', '')  # Remove any ampersands
         job_name = re.sub(r'^\d+', '', job_name)  # Remove any leading digits, otherwise qsub will throw an error
 
-    proc = Popen('qsub', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
+    if not pretend:
+        proc = Popen('qsub', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
 
-    pbs = """#PBS -S /bin/bash
+        pbs = """#PBS -S /bin/bash
 #PBS -e localhost:{pbs_output}
 #PBS -o localhost:{pbs_output}
 #PBS -j oe
@@ -90,24 +103,26 @@ export PBS_NCPU={cpu}
 echo -E '==> Run command    :' "{cmd_echo}"
 echo    '==> Execution host :' `hostname`
 {cmd}
-""".format(
-        pbs_output=output_dir,
-        resources=resources,
-        name=job_name,
-        cwd=wd,
-        path=path,
-        cpu=cpu,
-        send_email=send_email,
-        email=email,
-        cmd_echo=cmd_echo,
-        cmd=cmd
-    )
+    """.format(
+            pbs_output=output_dir,
+            resources=resources,
+            name=job_name,
+            cwd=wd,
+            path=path,
+            cpu=cpu,
+            send_email=send_email,
+            email=email,
+            cmd_echo=cmd_echo,
+            cmd=cmd
+        )
 
-    job_id, err = proc.communicate(input=pbs)
-    if err:
-        raise Exception(err)
+        job_id, err = proc.communicate(input=pbs)
+        if err:
+            raise Exception(err)
 
-    return job_id.strip()
+        return job_id.strip()
+    else:
+        return cmd
 
 
 def main():
@@ -119,6 +134,7 @@ def main():
         """
         We'd like to have the REMAINDER argument formatted in a nicer way and the epilogue is already formatted
         """
+
         # noinspection PyProtectedMember
         def _format_args(self, action, default_metavar):
             if action.nargs == argparse.REMAINDER:
@@ -166,6 +182,16 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
                         help='Send an email to this address when a job ends or is aborted')
     parser.add_argument('-n', '-name', '--name', default=None,
                         help='Give submitted job(s) a verbose name.')
+    parser.add_argument('-a', '-args', '--args', type=argparse.FileType('rU'),
+                        help='File with a list of arguments to the job for batch submitting. '
+                             'Works only with direct command, not -f. '
+                             'Batch-size of arguments are appended to the end of command, '
+                             'or they replace a "{}" if found.')
+    # noinspection PyTypeChecker
+    parser.add_argument('-b', '-batch-size', '--batch-size', type=int,
+                        help='Number of arguments from <args> to use per job.')
+    parser.add_argument('-p', '-pretend', '--pretend', action='store_true',
+                        help='Don\'t submit, print the commands out instead.')
 
     args = parser.parse_args()
 
@@ -176,13 +202,37 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
         parser.error(
             "You are trying to use the obsolete syntax for submitjob. Please run it with --help to see the new usage.")
 
+    if args.args:
+        if args.file:
+            parser.error("Arguments (-a) only work with single command, not -f.")
+        if not args.batch_size:
+            parser.error(
+                "Trying to use arguments without batch size. "
+                "Please add -b to define how many arguments should be added to command per submitted job.")
+
     commands = []
 
     if args.command:
         # single command takes precedence
+        if args.file:
+            sys.stderr.write("WARNING: Ignoring commands from file (-f/--file), direct command takes precedence.\n")
+
         commands.append(' '.join(map(_sanitize_cmd, args.command)))
     elif args.file:
         commands = [c.strip() for c in args.file]
+
+    if args.args:
+        assert len(commands) == 1  # Just in case, this should not happen
+
+        cmd = commands[0]
+        if '{}' not in cmd:
+            cmd += ' {}'  # add the args placeholder to the end for appending
+
+        commands = []
+        cmd_args = [l.strip() for l in args.args]
+
+        for arg_batch in batch(cmd_args, args.batch_size):
+            commands.append(cmd.replace('{}', ' '.join([('"%s"' % b) for b in arg_batch])))  # Quote the arguments
 
     if args.email and len(commands) > 10:
         parser.error("Sending email is not supported when submitting more than 10 jobs in a batch")
@@ -190,7 +240,7 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
 
-        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email, job_name=args.name)
+        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email, job_name=args.name, pretend=args.pretend)
         print(prefix + job_id)
 
         if not args.disable_log:
