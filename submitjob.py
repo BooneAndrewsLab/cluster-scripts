@@ -222,7 +222,7 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
 
         commands.append(' '.join(map(_sanitize_cmd, args.command)))
     elif args.file:
-        commands = [c.strip() for c in args.file]
+        commands = [c.strip() for c in args.file if c.strip()]
 
     if args.args:
         assert len(commands) == 1  # Just in case, this should not happen
