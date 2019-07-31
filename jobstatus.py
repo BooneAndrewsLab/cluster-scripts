@@ -5,7 +5,6 @@ import os
 import random
 import re
 import sys
-import xml.etree.ElementTree as Et
 from collections import defaultdict
 from datetime import datetime, timedelta
 from subprocess import Popen, PIPE
@@ -17,7 +16,10 @@ WIDTH = os.getenv("COLUMNS")
 
 if not WIDTH:
     with os.popen('stty size', 'r') as ttyin:
-        _, WIDTH = map(int, ttyin.read().split())
+        try:
+            _, WIDTH = map(int, ttyin.read().split())
+        except ValueError:
+            WIDTH = 120
 
 LOG_PATH = os.path.join(HOME, '.pbs_log')
 PBS_PATH = os.path.join(HOME, 'pbs-output')
@@ -25,6 +27,7 @@ PBS_ARCHIVE_PATH = os.path.join(PBS_PATH, 'archive')
 USER_LABEL = '*%s' % (USER,)
 
 RE_DC = re.compile(r'.+[.]o(\d+)')
+# Adapted from: https://stackoverflow.com/a/14693789
 ANSI_ESC = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 
 
@@ -221,7 +224,7 @@ def read_pbs_log(jobs=None):
     return jobs
 
 
-def cache_cmd(cmd):
+def cache_cmd(cmd, max_seconds=60):
     """ Run and cache the command for 1min
 
     :param cmd: Command to execute
@@ -236,7 +239,7 @@ def cache_cmd(cmd):
 
     if os.path.exists(cached_file):
         age = now - datetime.fromtimestamp(os.path.getmtime(cached_file))
-        if age.total_seconds() < 60:
+        if age.total_seconds() < max_seconds:
             with open(cached_file) as cached_in:
                 return cached_in.read()
 
@@ -262,6 +265,8 @@ def read_qstatx(jobs=None):
     :return: Parsed jobs from qstat output
     :rtype: dict
     """
+    import xml.etree.cElementTree as Et
+
     qstat = cache_cmd('/usr/bin/qstat -x')
 
     jobs = jobs if jobs is not None else JobList()
@@ -313,7 +318,7 @@ def read_qstat():
         if not line:
             continue
 
-        job_id, name, user, time, status, queue = re.split(r'\s+', line.strip())
+        job_id, name, user, time, status, queue = line.strip().split()
 
         user = USER_LABEL if user == USER else user
         user_stats[user][queue][status] += 1
