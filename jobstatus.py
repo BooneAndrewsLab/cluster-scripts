@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+import hashlib
 import operator
 import os
 import random
@@ -25,6 +25,7 @@ PBS_ARCHIVE_PATH = os.path.join(PBS_PATH, 'archive')
 USER_LABEL = '*%s' % (USER,)
 
 RE_DC = re.compile(r'.+[.]o(\d+)')
+ANSI_ESC = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 
 
 class JobStatusError(Exception):
@@ -220,6 +221,38 @@ def read_pbs_log(jobs=None):
     return jobs
 
 
+def cache_cmd(cmd):
+    """ Run and cache the command for 1min
+
+    :param cmd: Command to execute
+    :type cmd: str
+    :return: cmd output
+    :rtype: str
+    """
+
+    hsh = hashlib.sha1(cmd.encode()).hexdigest()
+    cached_file = os.path.join('/tmp', '{user}-{hash}'.format(user=USER, hash=hsh))
+    now = datetime.now()
+
+    if os.path.exists(cached_file):
+        age = now - datetime.fromtimestamp(os.path.getmtime(cached_file))
+        if age.total_seconds() < 60:
+            with open(cached_file) as cached_in:
+                return cached_in.read()
+
+    proc = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
+    ret, err = proc.communicate()
+    if err:
+        raise Exception("Can't run %s: %s" % (cmd, err))
+
+    ret = ANSI_ESC.sub('', ret)
+
+    with open(cached_file, 'w') as cached_out:
+        cached_out.write(ret)
+
+    return ret
+
+
 def read_qstatx(jobs=None):
     """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this script.
     Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
@@ -229,11 +262,7 @@ def read_qstatx(jobs=None):
     :return: Parsed jobs from qstat output
     :rtype: dict
     """
-    proc = Popen('/usr/bin/qstat -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
-                 universal_newlines=True)
-    qstat, err = proc.communicate()
-    if err:
-        raise Exception("Can't run qstat: %s" % err)
+    qstat = cache_cmd('/usr/bin/qstat -x')
 
     jobs = jobs if jobs is not None else JobList()
 
@@ -274,11 +303,7 @@ def read_qstat():
     :return: Job summaries for users, queues and total
     :rtype: tuple[dict, dict, dict]
     """
-    proc = Popen('/usr/bin/qstat', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
-                 universal_newlines=True)
-    qstat, err = proc.communicate()
-    if err:
-        raise Exception("Can't run qstat: %s" % err)
+    qstat = cache_cmd('/usr/bin/qstat')
 
     user_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     queue_stats = defaultdict(lambda: defaultdict(int))
