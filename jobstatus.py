@@ -229,6 +229,8 @@ def cache_cmd(cmd, max_seconds=60):
 
     :param cmd: Command to execute
     :type cmd: str
+    :param max_seconds: How many seconds should the output be cached
+    :type max_seconds: int
     :return: cmd output
     :rtype: str
     """
