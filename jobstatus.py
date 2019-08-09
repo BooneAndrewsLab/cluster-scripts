@@ -40,7 +40,10 @@ class Job(dict):
 
     @property
     def cmd(self):
-        return self.get('log_cmd', '').strip('"') or self.get('Run command') or '-'
+        if 'log_cmd' in self:
+            return self['log_cmd'][1:-1]  # Strip double quotes, but only one
+
+        return self.get('Run command') or '-'
 
     def cmd_trucated(self, length=32):
         cmd = self.cmd
