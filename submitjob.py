@@ -13,6 +13,22 @@ CWD = os.getcwd()
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 
 
+def environment_exists(env_name):
+    proc = Popen('conda env list', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+                 universal_newlines=True)
+
+    ret, err = proc.communicate()
+    if err:
+        raise Exception(err)
+
+    environments = set()
+    for line in ret.splitlines():
+        if line and not line.startswith('#'):
+            environments.add(line.split()[0])
+
+    return env_name in environments
+
+
 def batch(iterable, n=1):
     """ Adapted from https://stackoverflow.com/a/8290508 """
     size = len(iterable)
@@ -34,7 +50,7 @@ def _sanitize_cmd(bit):
 
 
 def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None,
-           pretend=False):
+           pretend=False, environment=None):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
@@ -47,6 +63,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :param path: Job's PATH. Default is $PATH.
     :param job_name: Name of the job as displayed by qstat. Default is command name, ie: awk
     :param pretend: Don't submit job to qsub, just print it out instead
+    :param environment: Name of the conda environment to activate
     :type cmd: str
     :type walltime: float
     :type mem: float
@@ -57,6 +74,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :type path: str
     :type job_name: str
     :type pretend: bool
+    :type environment: str
     :return: Job id returned by qsub.
     :rtype: str
     """
@@ -84,6 +102,10 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
         job_name = job_name.replace('&', '')  # Remove any ampersands
         job_name = re.sub(r'^\d+', '', job_name)  # Remove any leading digits, otherwise qsub will throw an error
 
+    job_setup = ''
+    if environment:
+        job_setup += 'source activate %s' % environment
+
     if not pretend:
         proc = Popen('qsub', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
 
@@ -102,6 +124,7 @@ export PATH='{path}'
 export PBS_NCPU={cpu}
 echo -E '==> Run command    :' "{cmd_echo}"
 echo    '==> Execution host :' `hostname`
+{job_setup}
 {cmd}
     """.format(
             pbs_output=output_dir,
@@ -113,6 +136,7 @@ echo    '==> Execution host :' `hostname`
             send_email=send_email,
             email=email,
             cmd_echo=cmd_echo,
+            job_setup=job_setup,
             cmd=cmd
         )
 
@@ -170,6 +194,8 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     # noinspection PyTypeChecker
     parser.add_argument('-c', '-cpu', '--cpu', type=int, default=1,
                         help='Number of CPUs required on a single node, default 1.')
+    parser.add_argument('-e', '-conda-environment', '--conda-environment',
+                        help='Activate this environment before running a job.')
     parser.add_argument('-f', '-file', '--file', type=argparse.FileType('rU'),
                         help='Read commands from a file, one per line. If a "command" is specified as a positional '
                              'argument this will be ignored.')
@@ -210,6 +236,11 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
                 "Trying to use arguments without batch size. "
                 "Please add -b to define how many arguments should be added to command per submitted job.")
 
+    if args.conda_environment and not environment_exists(args.conda_environment):
+        parser.error(
+            'Could not find conda environment "%s", '
+            'please check spelling and make sure the environment exists' % args.conda_environment)
+
     if args.pretend:  # Don't write log if we don't submit
         args.disable_log = True
 
@@ -243,7 +274,8 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
 
-        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email, job_name=args.name, pretend=args.pretend)
+        job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email, job_name=args.name, pretend=args.pretend,
+                        environment=args.conda_environment)
         print(prefix + job_id)
 
         if not args.disable_log:
