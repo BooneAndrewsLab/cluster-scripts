@@ -13,13 +13,17 @@ CWD = os.getcwd()
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 
 
+class SubmitException(Exception):
+    pass
+
+
 def environment_exists(env_name):
     proc = Popen('conda env list', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
 
     ret, err = proc.communicate()
     if err:
-        raise Exception(err)
+        raise SubmitException(err)
 
     environments = set()
     for line in ret.splitlines():
@@ -104,7 +108,8 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
 
     job_setup = ''
     if environment:
-        job_setup += 'source activate %s' % environment
+        job_setup = """source /etc/profile.d/conda.sh
+conda activate %s""" % environment
 
     if not pretend:
         proc = Popen('qsub', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
@@ -124,7 +129,9 @@ export PATH='{path}'
 export PBS_NCPU={cpu}
 echo -E '==> Run command    :' "{cmd_echo}"
 echo    '==> Execution host :' `hostname`
+
 {job_setup}
+
 {cmd}
     """.format(
             pbs_output=output_dir,
@@ -236,10 +243,13 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
                 "Trying to use arguments without batch size. "
                 "Please add -b to define how many arguments should be added to command per submitted job.")
 
-    if args.conda_environment and not environment_exists(args.conda_environment):
-        parser.error(
-            'Could not find conda environment "%s", '
-            'please check spelling and make sure the environment exists' % args.conda_environment)
+    try:
+        if args.conda_environment and not environment_exists(args.conda_environment):
+            parser.error(
+                'Could not find conda environment "%s", '
+                'please check spelling and make sure the environment exists' % args.conda_environment)
+    except SubmitException:
+        parser.error('Conda environments are not supported on this system')
 
     if args.pretend:  # Don't write log if we don't submit
         args.disable_log = True
