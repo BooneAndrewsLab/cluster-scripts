@@ -18,6 +18,14 @@ class SubmitException(Exception):
 
 
 def environment_exists(env_name):
+    """Checks if conda environment exists. Throws SubmitException if conda is not available.
+
+    :param env_name: Conda environment name
+    :type env_name: str
+    :return: Environment exists
+    :rtype: bool
+    """
+
     proc = Popen('conda env list', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
 
@@ -34,13 +42,30 @@ def environment_exists(env_name):
 
 
 def batch(iterable, n=1):
-    """ Adapted from https://stackoverflow.com/a/8290508 """
+    """ Adapted from https://stackoverflow.com/a/8290508
+
+    :param iterable: iterable we want to split
+    :param n: size of a batch
+    :type iterable: [list|tuple]
+    :type n: int
+    :return: Input interable split into batches
+    :rtype: [list|tuple]
+    """
+
     size = len(iterable)
     for ndx in range(0, size, n):
         yield iterable[ndx:min(ndx + n, size)]
 
 
 def _sanitize_cmd(bit):
+    """ Sanitize a submitted command, add quotations etc...
+
+    :param bit: A part of command to sanitize
+    :type bit: str
+    :return: Sanitized part of command
+    :rtype: str
+    """
+
     if "'" in bit and not re.search("^($|'|\")", bit):
         return '"%s"' % (bit,)
     elif re.search(r"[${[\]!} ]", bit) and "'" not in bit:
@@ -228,6 +253,8 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
 
     args = parser.parse_args()
 
+    # VARIOUS CHECKS
+
     if not args.command and not args.file:
         parser.error("Missing command to submit")
 
@@ -251,6 +278,8 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     except SubmitException:
         parser.error('Conda environments are not supported on this system')
 
+    # PREP WORK
+
     if args.pretend:  # Don't write log if we don't submit
         args.disable_log = True
 
@@ -261,22 +290,23 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
         if args.file:
             sys.stderr.write("WARNING: Ignoring commands from file (-f/--file), direct command takes precedence.\n")
 
-        commands.append(' '.join(map(_sanitize_cmd, args.command)))
+        if args.args:
+            cmd = args.command
+
+            if '{}' not in cmd:
+                cmd.append('{}')  # add the args placeholder to the end for appending
+
+            cmd_args = [l.strip() for l in args.args]
+
+            for arg_batch in batch(cmd_args, args.batch_size):
+                insert_idx = cmd.index('{}')
+                expanded_cmd = cmd[:insert_idx] + [('"%s"' % b) for b in arg_batch] + cmd[insert_idx + 1:]
+                commands.append(' '.join(map(_sanitize_cmd, expanded_cmd)))
+        else:
+            commands.append(' '.join(map(_sanitize_cmd, args.command)))
     elif args.file:
+        # commands from file should be formatted correctly already
         commands = [c.strip() for c in args.file if c.strip()]
-
-    if args.args:
-        assert len(commands) == 1  # Just in case, this should not happen
-
-        cmd = commands[0]
-        if '{}' not in cmd:
-            cmd += ' {}'  # add the args placeholder to the end for appending
-
-        commands = []
-        cmd_args = [l.strip() for l in args.args]
-
-        for arg_batch in batch(cmd_args, args.batch_size):
-            commands.append(cmd.replace('{}', ' '.join([('"%s"' % b) for b in arg_batch])))  # Quote the arguments
 
     if args.email and len(commands) > 10:
         parser.error("Sending email is not supported when submitting more than 10 jobs in a batch")
