@@ -73,7 +73,7 @@ class Job:
 
         self.job_id = job['Job_Id'].split('.')[0]
         self.user = job['euser']
-        self.mem = int(resources.get('mem', '2097152kb')[:-2]) / 1024.  # 2GB default memory
+        self.mem = int(resources.get('mem', '2048mb')[:-2]) / 1024.  # 2GB default memory
         self.node = None
         if job.get('exec_host'):
             self.node = job['exec_host'].split('.')[0]
