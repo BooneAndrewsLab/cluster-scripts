@@ -26,7 +26,7 @@ PBS_PATH = os.path.join(HOME, 'pbs-output')
 PBS_ARCHIVE_PATH = os.path.join(PBS_PATH, 'archive')
 USER_LABEL = '*%s' % (USER,)
 
-RE_DC = re.compile(r'.+[.]o(\d+)')
+RE_DC = re.compile(r'(.+)[.]o(\d+)')
 # Adapted from: https://stackoverflow.com/a/14693789
 ANSI_ESC = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 
@@ -35,196 +35,32 @@ class JobStatusError(Exception):
     """Custom error thrown by jobstatus code"""
 
 
-class Job(dict):
-    """Simple class extending a dictionary with convenient functions for job details retrieval"""
-
-    @property
-    def cmd(self):
-        if 'log_cmd' in self:
-            return self['log_cmd'][1:-1]  # Strip double quotes, but only one
-
-        return self.get('Run command') or '-'
-
-    def cmd_trucated(self, length=32):
-        cmd = self.cmd
-        if len(cmd) > length:
-            cmd = cmd[:length - 3] + '...'
-        return cmd
-
-    @property
-    def job_id(self):
-        return self['job_id']
-
-    @property
-    def exit_status(self):
-        return self.get('Exit status', '-')
-
-    @property
-    def state(self):
-        if self.exit_status not in ('-', '0'):
-            return 'Failed'
-
-        s = self.get('job_state', 'Completed' if 'Execution host' in self else '?')
-        if 'queue' in self:
-            s += ' (%s)' % self['queue']
-
-        return s
-
-    @property
-    def start(self):
-        if 'log_start_time' in self:
-            return self['log_start_time'].strftime('%Y-%m-%d %H:%M:%S')
-        return ''
-
-    @property
-    def runtime(self):
-        if 'Resource_List.walltime' in self:
-            return '%s/%s' % (self.get('resources_used.walltime', '00:00:00'), self['Resource_List.walltime'])
-        elif 'walltime' in self:
-            return self['walltime']
-        return ''
-
-    @property
-    def memory(self):
-        if 'Resource_List.mem' in self:
-            mem = float(self.get('resources_used.mem', '0kb')[:-2]) / (1024 * 1024)
-            rmem = float(self.get('Resource_List.mem', '0mb')[:-2]) / 1024
-
-            return '%.1f/%.1fG (%3d%%)' % (mem, rmem, mem / rmem * 100)
-        elif 'mem' in self:
-            # Fixes a bug, where job is killed while writing to stdout, preventing it to add \n to the end of line,
-            # so the job details are continued on the same line and not parsed
-            return self['mem']
-        return ''
+class TimeDeltaError(Exception):
+    """Custom error thrown when parsing time delta"""
 
 
-class JobList(dict):
-    """Modified dictionary that updates existing job data on item set"""
+def _parse_timearg(arg, since=datetime.now()):
+    """Parse a human readable timedelta option: 5h,3w,2d,... and subtracts it from the date
 
-    def __setitem__(self, key, value):
-        if key not in self:
-            super(JobList, self).__setitem__(key, Job(value))
-            self[key]['job_id'] = int(key.split('.')[0])
-        else:
-            self.__getitem__(key).update(value)
-
-    def __getitem__(self, item):
-        if isinstance(item, slice):
-            return sorted(self.values(), key=lambda x: x.job_id, reverse=True)[item].__iter__()
-
-        return super(JobList, self).__getitem__(item)
-
-    def __iter__(self):
-        return sorted(self.values(), key=lambda x: x.job_id, reverse=True).__iter__()
-
-
-class TimeDelta:
-    """Makes filtering job list by arbitrary constraints simpler"""
-
-    def __init__(self, arg, newer=True):
-        self.compare = operator.ge if newer else operator.le
-
-        if re.match(r'^\d{4}-\d{2}-\d{2}$', arg):
-            self.field = 'date'
-            self.value = datetime.strptime(arg, '%Y-%m-%d')
-        elif re.match(r'^\d+[a-cn-u.]*-*\d*[a-cn-u.]*$', arg):
-            self.field = 'job_id'
-            if '-' in arg:
-                self.value_min = int(arg.split('-')[0].split('.')[0])
-                self.value_max = int(arg.split('-')[1].split('.')[0])
-            else:
-                self.value_min = int(arg.split('.')[0])
-        elif re.match(r'^\d+[hdw]$', arg):
-            self.field = 'date'
-            self.value = _parse_timearg(arg)
-        else:
-            raise JobStatusError("Unable to parse: %s" % arg)
-
-    def filter(self, jobs):
-        for job in jobs:
-            if self.field == 'date':
-                if 'finished' in job:
-                    if self.compare(job['finished'], self.value):
-                        yield job
-                elif 'qstat' not in job and 'log_start_time' in job:
-                    if self.compare(job['log_start_time'], self.value):
-                        yield job
-            elif self.field == 'job_id':
-                if self.compare(job.job_id, self.value_min):
-                    if hasattr(self, 'value_max'):
-                        if not operator.le(job.job_id, self.value_max):
-                            continue
-                    yield job
-
-
-def read_pbs_output(jobs=None):
-    """Parse all job output files in ~/pbs-output/ folder and return the details as a job_id -> job_details pairs.
-    Known job_details keys are:
-    1. "Run command"
-    2. "Execution host"
-    3. "Exit status"
-    "Resources used" is parsed further into:
-    4.1 "cput"
-    4.2 "walltime"
-    4.3 "mem"
-    4.4 "vmem"
-
-    :return: Parsed jobs from ~/pbs-output/ folder
-    :rtype: dict
+    :param arg: timedelta string to parse
+    :param since: reference datetime, or now() by default
+    :type arg: string
+    :type since: datetime
+    :return: Adjusted datetime
+    :rtype: datetime
     """
-    jobs = jobs if jobs is not None else JobList()
+    amount = int(arg[:-1])
+    period = arg[-1]
 
-    for out in os.listdir(PBS_PATH):
-        # Parse only job files ending with:
-        if out.endswith('.bc.ccbr.utoronto.ca.OU'):  # banting cluster
-            job_id = out[:-3]  # remove .OU
-        elif RE_DC.match(out):  # DC cluster... ie: python.o70
-            job_id = '%s.dc01.ccbr.utoronto.ca' % RE_DC.match(out).group(1)
-        else:
-            continue
-
-        # Set ctime of the output file as execution end time
-        out_data = {'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out))),
-                    'pbs_output': os.path.join(PBS_PATH, out)}
-        with open(os.path.join(PBS_PATH, out)) as fin:
-            for line in fin:
-                if line.startswith('==>'):  # Parse only useful details, ignore job output for now
-                    param, val = line[4:].strip().split(':', 1)
-                    param = param.strip()
-
-                    if param == 'Resources used':
-                        out_data.update([v.split('=') for v in val.strip().split(',')])
-                    else:
-                        out_data[param] = val.strip()
-
-        jobs[job_id] = out_data
-
-    return jobs
+    return since - timedelta(
+        **{{'h': 'hours', 'd': 'days', 'w': 'weeks'}[period]: amount}
+    )
 
 
-def read_pbs_log(jobs=None):
-    """Parse .pbs_log file created by the new submitjob script for some extra info on running/finished jobs. Returns
-    job_id -> (timestamp, command) pairs.
-
-    :return: Parsed jobs from ~/.pbs_log file
-    :rtype: Dict[String, Tuple[datetime, String]]
-    """
-    jobs = jobs if jobs is not None else JobList()
-
-    if os.path.isfile(LOG_PATH):
-        with open(LOG_PATH) as log:
-            for l in log:
-                timestamp, job_id, cmd = l.strip().split(None, 2)
-                try:
-                    start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]")
-                except ValueError:
-                    start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S]")
-
-                jobs[job_id] = {'log_start_time': start_time,
-                                'pbs_log': l,
-                                'log_cmd': cmd}
-
-    return jobs
+def generic_to_gb(val):
+    unit = val[-2:].lower()
+    val = int(val[:-2])
+    return val / {'kb': 1048576, 'mb': 1024, 'gb': 1.}[unit]
 
 
 def cache_cmd(cmd, max_seconds=60):
@@ -261,50 +97,235 @@ def cache_cmd(cmd, max_seconds=60):
     return ret
 
 
-def read_qstatx(jobs=None):
-    """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this script.
-    Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful ones are:
-    resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
-    This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
+def read_xml(cmd, *args, **kwargs):
+    """ Execute cmd and parse the output XML
 
-    :return: Parsed jobs from qstat output
-    :rtype: dict
+    :param cmd: Command to run
+    :type cmd: str
+    :return: List of children elements in xml root
+    :rtype: list[Et.Element]
     """
     import xml.etree.cElementTree as Et
 
-    qstat = cache_cmd('/usr/bin/qstat -x')
+    qstat = cache_cmd(cmd, *args, **kwargs)
 
-    jobs = jobs if jobs is not None else JobList()
+    if not qstat:
+        return []
 
-    root = Et.fromstring(qstat)
-    for job_ele in root:
-        job = dict([(attr.tag, attr.text) for attr in job_ele])
-        if job.get('euser') == USER:
-            for ts in ['qtime', 'mtime', 'ctime', 'etime']:
-                if ts in job:
-                    job[ts] = datetime.fromtimestamp(int(job[ts]))
-
-            if 'Resource_List' in job:
-                job.pop('Resource_List')
-                for rl in job_ele.find('Resource_List'):
-                    job['Resource_List.%s' % rl.tag] = rl.text
-
-            if 'resources_used' in job:
-                job.pop('resources_used')
-                for rl in job_ele.find('resources_used'):
-                    job['resources_used.%s' % rl.tag] = rl.text
-
-            jobs[job['Job_Id']] = job
-
-    return jobs
+    return Et.fromstring(qstat)  # trim any color escape sequences returned by our command
 
 
-def read_all():
-    jobs = read_qstatx()
-    read_pbs_log(jobs)
-    read_pbs_output(jobs)
+class Job:
+    job_id = None
+    mem = 2.  # 2GB default memory
+    node = None
+    exit_status = '-'
+    state = '?'
+    start = ''
+    runtime = ''
+    name = ''
+    memory = ''
+    cmd = ''
+    pbs_log = None
+    finished = None
+    start_time = None
+    qstat = False
 
-    return jobs
+    def cmd_trucated(self, length=32):
+        cmd = self.cmd
+        if len(cmd) > length:
+            cmd = cmd[:length - 3] + '...'
+        return cmd
+
+    def parse_qstat(self, job):
+        """ Object representing one Job as parsed from qstat output
+
+        :param job: Job details from qstat
+        :type job: dict
+        """
+        self.job_id = int(job['Job_Id'].split('.')[0])
+        if 'Resource_List.mem' in job:
+            self.mem = generic_to_gb(job['Resource_List.mem'])
+
+        if job.get('exec_host'):
+            self.node = job['exec_host'].split('.')[0]
+
+        self.state = job.get('job_state', self.state)
+        if 'queue' in job:
+            self.state += ' (%s)' % job['queue']
+
+        if 'Resource_List.walltime' in job:
+            self.runtime = '%s/%s' % (job.get('resources_used.walltime', '00:00:00'), job['Resource_List.walltime'])
+
+        self.name = job.get('Job_Name', self.name)
+
+        used_mem = generic_to_gb(job.get('resources_used.mem', '0gb'))
+        self.memory = '%.1f/%.1fG (%3d%%)' % (used_mem, self.mem, used_mem / self.mem * 100)
+        self.qstat = True
+
+    def parse_pbs_log(self, job_id, start_time, cmd, log_line):
+        self.job_id = int(job_id)
+        self.start_time = start_time
+        self.start = start_time.strftime('%Y-%m-%d %H:%M:%S')
+        self.cmd = cmd[1:-1]
+        self.pbs_log = log_line
+
+    def parse_pbs_output(self, output):
+        self.job_id = int(output['job_id'])
+        self.exit_status = output.get('Exit status', self.exit_status)
+        self.finished = output.get('finished')
+
+        if self.exit_status not in ('-', '0'):
+            self.state = 'Failed'
+        else:
+            self.state = 'Completed'
+
+        if not self.cmd:
+            self.cmd = output.get('Run command', '-')
+
+        self.runtime = output.get('walltime', self.runtime)
+
+        self.memory = output.get('mem', self.memory)
+
+
+class Jobs:
+    jobs = defaultdict(Job)
+
+    def __init__(self):
+        self.read_qstatx()
+        self.read_pbs_log()
+        self.read_pbs_output()
+
+    @property
+    def jobs_list(self):
+        return sorted(self.jobs.values(), key=lambda x: x.job_id, reverse=True)
+
+    def read_qstatx(self):
+        """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this
+        script. Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful
+        ones are: resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
+        This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
+        """
+        for jobele in read_xml('/usr/bin/qstat -x'):
+            job = dict([(attr.tag, attr.text) for attr in jobele])
+            job['Job_Id'] = job['Job_Id'].split('.')[0]
+
+            if job.get('euser') == USER:
+                for ts in ['qtime', 'mtime', 'ctime', 'etime']:
+                    if ts in job:
+                        job[ts] = datetime.fromtimestamp(int(job[ts]))
+
+                if 'Resource_List' in job:
+                    job.pop('Resource_List')
+                    for rl in jobele.find('Resource_List'):
+                        job['Resource_List.%s' % rl.tag] = rl.text
+
+                if 'resources_used' in job:
+                    job.pop('resources_used')
+                    for rl in jobele.find('resources_used'):
+                        job['resources_used.%s' % rl.tag] = rl.text
+
+                self.jobs[job['Job_Id']].parse_qstat(job)
+
+    def read_pbs_log(self):
+        """Parse .pbs_log file created by the new submitjob script for some extra info on running/finished jobs. Returns
+        job_id -> (timestamp, command) pairs.
+        """
+        if os.path.isfile(LOG_PATH):
+            with open(LOG_PATH) as log:
+                for l in log:
+                    timestamp, job_id, cmd = l.strip().split(None, 2)
+                    job_id = job_id.split('.')[0]
+                    try:
+                        start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]")
+                    except ValueError:
+                        start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S]")
+
+                    self.jobs[job_id].parse_pbs_log(job_id, start_time, cmd, l)
+
+    def read_pbs_output(self):
+        """Parse all job output files in ~/pbs-output/ folder and return the details as a job_id -> job_details pairs.
+        Known job_details keys are:
+        1. "Run command"
+        2. "Execution host"
+        3. "Exit status"
+        "Resources used" is parsed further into:
+        4.1 "cput"
+        4.2 "walltime"
+        4.3 "mem"
+        4.4 "vmem"
+        """
+        for out in os.listdir(PBS_PATH):
+            name = ''
+
+            # Parse only job files ending with:
+            if out.endswith('.bc.ccbr.utoronto.ca.OU'):  # banting cluster
+                job_id = out.split('.')[0]
+            elif RE_DC.match(out):  # DC cluster... ie: python.o70
+                matcher = RE_DC.match(out)
+                name = matcher.group(1)
+                job_id = matcher.group(2)
+            else:
+                continue
+
+            # Set ctime of the output file as execution end time
+            out_data = {
+                'job_id': job_id,
+                'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out))),
+                'pbs_output': os.path.join(PBS_PATH, out),
+                'name': name}
+
+            with open(os.path.join(PBS_PATH, out)) as fin:
+                for line in fin:
+                    if line.startswith('==>'):  # Parse only useful details, ignore job output for now
+                        param, val = line[4:].strip().split(':', 1)
+                        param = param.strip()
+
+                        if param == 'Resources used':
+                            out_data.update([v.split('=') for v in val.strip().split(',')])
+                        else:
+                            out_data[param] = val.strip()
+
+            self.jobs[job_id].parse_pbs_output(out_data)
+
+
+class TimeDelta:
+    """Makes filtering job list by arbitrary constraints simpler"""
+
+    def __init__(self, arg, newer=True):
+        self.compare = operator.ge if newer else operator.le
+
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', arg):
+            self.field = 'date'
+            self.value = datetime.strptime(arg, '%Y-%m-%d')
+        elif re.match(r'^\d+[a-cn-u.]*-*\d*[a-cn-u.]*$', arg):
+            self.field = 'job_id'
+            if '-' in arg:
+                self.value_min = int(arg.split('-')[0].split('.')[0])
+                self.value_max = int(arg.split('-')[1].split('.')[0])
+            else:
+                self.value_min = int(arg.split('.')[0])
+        elif re.match(r'^\d+[hdw]$', arg):
+            self.field = 'date'
+            self.value = _parse_timearg(arg)
+        else:
+            raise TimeDeltaError("Unable to parse: %s" % arg)
+
+    def filter(self, jobs):
+        for job in jobs:
+            if self.field == 'date':
+                if job.finished:
+                    if self.compare(job.finished, self.value):
+                        yield job
+                elif not job.qstat and job.start_time:
+                    if self.compare(job.start_time, self.value):
+                        yield job
+            elif self.field == 'job_id':
+                if self.compare(job.job_id, self.value_min):
+                    if hasattr(self, 'value_max'):
+                        if not operator.le(job.job_id, self.value_max):
+                            continue
+                    yield job
 
 
 def read_qstat():
@@ -331,24 +352,6 @@ def read_qstat():
         total_stats[status] += 1
 
     return user_stats, queue_stats, total_stats
-
-
-def _parse_timearg(arg, since=datetime.now()):
-    """Parse a human readable timedelta option: 5h,3w,2d,... and subtracts it from the date
-
-    :param arg: timedelta string to parse
-    :param since: reference datetime, or now() by default
-    :type arg: string
-    :type since: datetime
-    :return: Adjusted datetime
-    :rtype: datetime
-    """
-    amount = int(arg[:-1])
-    period = arg[-1]
-
-    return since - timedelta(
-        **{{'h': 'hours', 'd': 'days', 'w': 'weeks'}[period]: amount}
-    )
 
 
 def print_all_jobs():
@@ -384,7 +387,7 @@ def details(args):
     :param args: Arguments from argparse
     :type args: argparse.Namespace
     """
-    jobs = read_all()
+    jobs = Jobs().jobs_list
 
     if args.print_running or args.print_queued or args.print_completed or args.print_failed:
         if not args.print_running:
@@ -392,9 +395,9 @@ def details(args):
         if not args.print_queued:
             jobs = [job for job in jobs if not job.state.startswith('Q')]
         if not args.print_completed:
-            jobs = [job for job in jobs if not (job.state.startswith('C') or job.state == '?')]
+            jobs = [job for job in jobs if not job.state.startswith('C')]
         if not args.print_failed:
-            jobs = [job for job in jobs if not job.state.startswith('F')]
+            jobs = [job for job in jobs if not (job.state.startswith('F') or job.state == '?')]
 
     if args.limit_output.isdigit():
         if int(args.limit_output) < 1000000:
@@ -403,8 +406,11 @@ def details(args):
             limit_check = TimeDelta(args.limit_output)
             jobs = limit_check.filter(jobs)
     else:
-        limit_check = TimeDelta(args.limit_output)
-        jobs = limit_check.filter(jobs)
+        try:  # filter by time
+            limit_check = TimeDelta(args.limit_output)
+            jobs = limit_check.filter(jobs)
+        except TimeDeltaError:  # try filtering by name
+            jobs = [job for job in jobs if job.name == args.limit_output]
 
     if args.output == 'jobid':
         jobids = [str(job.job_id) for job in jobs]
@@ -413,8 +419,8 @@ def details(args):
         for job in jobs:
             print(job.cmd)
     else:
-        columns = ['%-8s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s']
-        headers = ('Job ID', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
+        columns = ['%-8s', '%-20s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s']
+        headers = ('Job ID', 'Name', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
 
         out_len = ' | '.join(columns[:-1]) % headers[:-1]
 
@@ -428,7 +434,7 @@ def details(args):
         print('-' * len(header))
 
         for job in jobs:
-            print(columns % (job.job_id, job.state, job.exit_status,
+            print(columns % (job.job_id, job.name, job.state, job.exit_status,
                              job.start, job.runtime, job.memory, job.cmd_trucated(free_space)))
 
 
@@ -440,7 +446,7 @@ def archive(args):
     """
     timefilter = TimeDelta(args.age, newer=False)
 
-    jobs = read_all()
+    jobs = Jobs().jobs_list
     jobs_to_archive = []
 
     for job in timefilter.filter(jobs):
@@ -478,8 +484,8 @@ def archive(args):
 
     with open(LOG_PATH + '_bkp', 'w') as log:
         for job in jobs[::-1]:
-            if job.get('pbs_log') and job.job_id not in archived_job_ids:
-                log.write(job.get('pbs_log'))
+            if job.pbs_log and job.job_id not in archived_job_ids:
+                log.write(job.pbs_log)
 
     for f in delete_list:
         os.remove(f)
