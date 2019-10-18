@@ -39,6 +39,22 @@ class TimeDeltaError(Exception):
     """Custom error thrown when parsing time delta"""
 
 
+def confirm_delete(question, confirmation_string):
+    """Ask a question via raw_input() with a string the user must repeat to confirm.
+    Code adapted from: https://stackoverflow.com/a/3041990
+    """
+    input_func = input
+    if '__builtin__' in sys.modules:  # if we're using python2, fallback to raw_input
+        input_func = sys.modules['__builtin__'].raw_input
+
+    prompt = "\nConfirm by typing in the number of jobs to be deleted: "
+
+    while True:
+        sys.stdout.write(question + prompt)
+        choice = input_func().lower()
+        return choice == str(confirmation_string)
+
+
 def _parse_timearg(arg, since=datetime.now()):
     """Parse a human readable timedelta option: 5h,3w,2d,... and subtracts it from the date
 
@@ -58,18 +74,27 @@ def _parse_timearg(arg, since=datetime.now()):
 
 
 def generic_to_gb(val):
+    """Convert any random unit to GB
+
+    :param val: size in any unit (including two letter unit)
+    :type val: str
+    :return: size in GB
+    :rtype: float
+    """
     unit = val[-2:].lower()
     val = int(val[:-2])
-    return val / {'kb': 1048576, 'mb': 1024, 'gb': 1.}[unit]
+    return val / {'kb': 1048576., 'mb': 1024., 'gb': 1.}[unit]
 
 
-def cache_cmd(cmd, max_seconds=60):
+def cache_cmd(cmd, max_seconds=60, ignore_cache=False):
     """ Run and cache the command for 1min
 
     :param cmd: Command to execute
-    :type cmd: str
     :param max_seconds: How many seconds should the output be cached
+    :param ignore_cache: Ignore cached output, re-run the command
+    :type cmd: str
     :type max_seconds: int
+    :type ignore_cache: bool
     :return: cmd output
     :rtype: str
     """
@@ -78,7 +103,7 @@ def cache_cmd(cmd, max_seconds=60):
     cached_file = os.path.join('/tmp', '{user}-{hash}'.format(user=USER, hash=hsh))
     now = datetime.now()
 
-    if os.path.exists(cached_file):
+    if not ignore_cache and os.path.exists(cached_file):
         age = now - datetime.fromtimestamp(os.path.getmtime(cached_file))
         if age.total_seconds() < max_seconds:
             with open(cached_file) as cached_in:
@@ -127,6 +152,7 @@ class Job:
     memory = ''
     cmd = ''
     pbs_log = None
+    pbs_output = None
     finished = None
     start_time = None
     qstat = False
@@ -186,15 +212,22 @@ class Job:
         self.runtime = output.get('walltime', self.runtime)
 
         self.memory = output.get('mem', self.memory)
+        self.pbs_output = output['pbs_output']
 
 
 class Jobs:
     jobs = defaultdict(Job)
 
-    def __init__(self):
+    def __init__(self, cache_cmds):
+        self.cache_cmds = cache_cmds
+
         self.read_qstatx()
         self.read_pbs_log()
         self.read_pbs_output()
+
+    @staticmethod
+    def collect(cache_cmds=True):
+        return Jobs(cache_cmds).jobs_list
 
     @property
     def jobs_list(self):
@@ -206,7 +239,7 @@ class Jobs:
         ones are: resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
         This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
         """
-        for jobele in read_xml('/usr/bin/qstat -x'):
+        for jobele in read_xml('/usr/bin/qstat -x', ignore_cache=not self.cache_cmds):
             job = dict([(attr.tag, attr.text) for attr in jobele])
             job['Job_Id'] = job['Job_Id'].split('.')[0]
 
@@ -387,9 +420,37 @@ def details(args):
     :param args: Arguments from argparse
     :type args: argparse.Namespace
     """
-    jobs = Jobs().jobs_list
+    # Don't cache commands if we're deleting jobs, we need fresh status
+    jobs = Jobs.collect(cache_cmds=not args.delete)
 
-    if args.print_running or args.print_queued or args.print_completed or args.print_failed:
+    filtering = True in (args.print_running, args.print_queued, args.print_completed, args.print_failed)
+
+    # We're about to delete some jobs, make sure to sanitize other arguments to make sense with delete action
+    if args.delete:
+        # Override to table view when deleting jobs, you want to see what'll get killed
+        if args.output != 'table':
+            sys.stderr.write('Warning: Output format forced from "%s" to "table" for delete action.\n' % args.output)
+            args.output = 'table'
+
+        # We can delete only running and queued, make sure they're both included if either is not explicitly enabled
+        if not args.print_queued and not args.print_running:
+            args.print_queued = True
+            args.print_running = True
+
+        filtering = True
+
+        # Get rid of completed and failed if they were explicitly defined
+        if args.print_completed or args.print_failed:
+            sys.stderr.write('Warning: Ignore completed and failed jobs for delete action.\n')
+            args.print_completed = False
+            args.print_failed = False
+
+        # Limiting by number of jobs makes no sense for deleting, get rid of it
+        if args.limit_output and args.limit_output.isdigit() and int(args.limit_output) < 10000:
+            sys.stderr.write('Warning: Filtering by number of jobs (%s) ignored.\n' % args.limit_output)
+            args.limit_output = False
+
+    if filtering:
         if not args.print_running:
             jobs = [job for job in jobs if not job.state.startswith('R')]
         if not args.print_queued:
@@ -399,18 +460,19 @@ def details(args):
         if not args.print_failed:
             jobs = [job for job in jobs if not (job.state.startswith('F') or job.state == '?')]
 
-    if args.limit_output.isdigit():
-        if int(args.limit_output) < 1000000:
-            jobs = jobs[:int(args.limit_output)]
+    if args.limit_output:
+        if args.limit_output.isdigit():
+            if int(args.limit_output) < 10000:
+                jobs = jobs[:int(args.limit_output)]
+            else:
+                limit_check = TimeDelta(args.limit_output)
+                jobs = limit_check.filter(jobs)
         else:
-            limit_check = TimeDelta(args.limit_output)
-            jobs = limit_check.filter(jobs)
-    else:
-        try:  # filter by time
-            limit_check = TimeDelta(args.limit_output)
-            jobs = limit_check.filter(jobs)
-        except TimeDeltaError:  # try filtering by name
-            jobs = [job for job in jobs if job.name == args.limit_output]
+            try:  # filter by time
+                limit_check = TimeDelta(args.limit_output)
+                jobs = limit_check.filter(jobs)
+            except TimeDeltaError:  # try filtering by name
+                jobs = [job for job in jobs if job.name == args.limit_output]
 
     if args.output == 'jobid':
         jobids = [str(job.job_id) for job in jobs]
@@ -437,6 +499,23 @@ def details(args):
             print(columns % (job.job_id, job.name, job.state, job.exit_status,
                              job.start, job.runtime, job.memory, job.cmd_trucated(free_space)))
 
+    if args.delete:
+        if not len(jobs):
+            print("\n\nNo jobs to delete.")
+            return
+
+        print("\n\nDANGER ZONE!")
+        if confirm_delete('Are you sure you want to delete %s jobs listed above?' % len(jobs), len(jobs)):
+            ids = [str(j.job_id) for j in jobs]
+            proc = Popen('qdel %s' % ' '.join(ids), shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+                         universal_newlines=True)
+            qdel, err = proc.communicate()
+            if err:
+                raise Exception("Can't run qdel: %s" % err)
+            print("Deleted %d jobs." % len(ids))
+        else:
+            print("Wrong answer, not deleting anything.")
+
 
 def archive(args):
     """Archive old finished jobs, save them in a gzipped file
@@ -446,15 +525,15 @@ def archive(args):
     """
     timefilter = TimeDelta(args.age, newer=False)
 
-    jobs = Jobs().jobs_list
+    jobs = Jobs.collect()
     jobs_to_archive = []
 
     for job in timefilter.filter(jobs):
-        if job.get('qstat'):
+        if job.qstat:
             # Do not delete running jobs!
             continue
 
-        if job.get('pbs_output') or job.get('pbs_log'):
+        if job.pbs_output or job.pbs_log:
             jobs_to_archive.append(job)
 
     if not jobs_to_archive:
@@ -473,11 +552,11 @@ def archive(args):
 
     with TarFile.open(tar_path, 'w:gz') as tar:
         for job in jobs_to_archive:
-            if job.get('pbs_output'):
-                tar.add(job.get('pbs_output'), arcname=job.get('pbs_output').replace(HOME, '').lstrip('/'))
-                delete_list.append(job.get('pbs_output'))
+            if job.pbs_output:
+                tar.add(job.pbs_output, arcname=job.pbs_output.replace(HOME, '').lstrip('/'))
+                delete_list.append(job.pbs_output)
 
-            if job.get('pbs_log'):
+            if job.pbs_log:
                 archived_job_ids.add(job.job_id)
 
             print('Archived job %s' % job.job_id)
@@ -511,16 +590,13 @@ def main():
                                             description='For detailed subcommand help run: <subcommand> -h.')
 
     details_parser = command_parsers.add_parser('details', help='Show details of my jobs.')
-    details_parser.add_argument('-r', '--print-running', action='store_true',
-                                help='Print running jobs.')
-    details_parser.add_argument('-q', '--print-queued', action='store_true',
-                                help='Print queued jobs.')
-    details_parser.add_argument('-c', '--print-completed', action='store_true',
-                                help='Print completed jobs.')
-    details_parser.add_argument('-f', '--print-failed', action='store_true',
-                                help='Print failed jobs.')
+    details_parser.add_argument('-r', '--print-running', action='store_true', help='Print running jobs.')
+    details_parser.add_argument('-q', '--print-queued', action='store_true', help='Print queued jobs.')
+    details_parser.add_argument('-c', '--print-completed', action='store_true', help='Print completed jobs.')
+    details_parser.add_argument('-f', '--print-failed', action='store_true', help='Print failed jobs.')
+    details_parser.add_argument('-d', '--delete', action='store_true', help='Delete listed jobs.')
     details_parser.add_argument('-l', '--limit-output', default='50',
-                                help='Limit output to either: number of lines, Job ID or time delta (2w, 3h or 1d). '
+                                help='Limit output to either: number of lines, Job ID, time delta or name. '
                                      'The default is 50 lines. '
                                      'Job ID can be in a form of range (i.e. 28327149-28327165). '
                                      'Time delta unit can be one of: h(hours), d(days) or w(weeks).')

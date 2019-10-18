@@ -12,6 +12,12 @@ def main():
         print("This script can not run by root!")
         exit(1)
 
+    # noinspection PyCompatibility
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Deletes all queued and running jobs.')
+    _ = parser.parse_args()
+
     proc = Popen('/usr/bin/qstat -u %s' % USER, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                  universal_newlines=True)
     qstat, err = proc.communicate()
