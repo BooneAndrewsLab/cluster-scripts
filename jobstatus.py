@@ -140,6 +140,12 @@ def read_xml(cmd, *args, **kwargs):
     return Et.fromstring(qstat)  # trim any color escape sequences returned by our command
 
 
+def truncate_str(s, length=32):
+    if len(s) > length:
+        s = s[:length - 3] + '...'
+    return s
+
+
 class Job:
     job_id = None
     mem = 2.  # 2GB default memory
@@ -158,10 +164,7 @@ class Job:
     qstat = False
 
     def cmd_trucated(self, length=32):
-        cmd = self.cmd
-        if len(cmd) > length:
-            cmd = cmd[:length - 3] + '...'
-        return cmd
+        return truncate_str(self.cmd, length)
 
     def parse_qstat(self, job):
         """ Object representing one Job as parsed from qstat output
@@ -496,7 +499,7 @@ def details(args):
         print('-' * len(header))
 
         for job in jobs:
-            print(columns % (job.job_id, job.name, job.state, job.exit_status,
+            print(columns % (job.job_id, truncate_str(job.name, 20), job.state, job.exit_status,
                              job.start, job.runtime, job.memory, job.cmd_trucated(free_space)))
 
     if args.delete:
