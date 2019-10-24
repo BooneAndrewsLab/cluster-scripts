@@ -539,6 +539,7 @@ def details(args):
                              job.start, job.runtime, job.memory, truncate_str(job.cmd, free_space)))
 
     if args.delete:
+        jobs = list(jobs)
         if not len(jobs):
             print("\n\nNo jobs to delete.")
             return
