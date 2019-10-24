@@ -42,6 +42,13 @@ class TimeDeltaError(Exception):
 def confirm_delete(question, confirmation_string):
     """Ask a question via raw_input() with a string the user must repeat to confirm.
     Code adapted from: https://stackoverflow.com/a/3041990
+
+    :param question: Question to show
+    :param confirmation_string: String to be repeated
+    :type question: str
+    :type confirmation_string: str
+    :return: Conformation
+    :rtype: bool
     """
     input_func = input
     if '__builtin__' in sys.modules:  # if we're using python2, fallback to raw_input
@@ -52,10 +59,10 @@ def confirm_delete(question, confirmation_string):
     while True:
         sys.stdout.write(question + prompt)
         choice = input_func().lower()
-        return choice == str(confirmation_string)
+        return choice == confirmation_string
 
 
-def _parse_timearg(arg, since=datetime.now()):
+def parse_timearg(arg, since=datetime.now()):
     """Parse a human readable timedelta option: 5h,3w,2d,... and subtracts it from the date
 
     :param arg: timedelta string to parse
@@ -256,11 +263,14 @@ class Jobs:
 
     @staticmethod
     def collect(cache_cmds=True):
-        return Jobs(cache_cmds).jobs_list
+        """ Collect all jobs, getting info from various sources
 
-    @property
-    def jobs_list(self):
-        return sorted(self.jobs.values(), key=lambda x: x.job_id, reverse=True)
+        :param cache_cmds: Cache commands (ie: qstat)
+        :type cache_cmds: bool
+        :return: All jobs
+        :rtype: list[Job]
+        """
+        return sorted(Jobs(cache_cmds).jobs.values(), key=lambda x: x.job_id, reverse=True)
 
     def read_qstatx(self):
         """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this
@@ -369,7 +379,7 @@ class TimeDelta:
                 self.value_min = int(arg.split('.')[0])
         elif re.match(r'^\d+[hdw]$', arg):
             self.field = 'date'
-            self.value = _parse_timearg(arg)
+            self.value = parse_timearg(arg)
         else:
             raise TimeDeltaError("Unable to parse: %s" % arg)
 
@@ -477,7 +487,7 @@ def details(args):
         # Limiting by number of jobs makes no sense for deleting, get rid of it
         if args.limit_output and args.limit_output.isdigit() and int(args.limit_output) < 10000:
             sys.stderr.write('Warning: Filtering by number of jobs (%s) ignored.\n' % args.limit_output)
-            args.limit_output = False
+            args.limit_output = None
 
     if filtering:
         if not args.print_running:
@@ -534,7 +544,7 @@ def details(args):
             return
 
         print("\n\nDANGER ZONE!")
-        if confirm_delete('Are you sure you want to delete %s jobs listed above?' % len(jobs), len(jobs)):
+        if confirm_delete('Are you sure you want to delete %s jobs listed above?' % len(jobs), str(len(jobs))):
             ids = [str(j.job_id) for j in jobs]
             proc = Popen('qdel %s' % ' '.join(ids), shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
                          universal_newlines=True)
