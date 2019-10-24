@@ -123,7 +123,7 @@ def cache_cmd(cmd, max_seconds=60, ignore_cache=False):
 
 
 def read_xml(cmd, *args, **kwargs):
-    """ Execute cmd and parse the output XML
+    """ Execute cmd and parse the output XML, any additional args are passed to cache_cmd
 
     :param cmd: Command to run
     :type cmd: str
@@ -141,6 +141,14 @@ def read_xml(cmd, *args, **kwargs):
 
 
 def truncate_str(s, length=32):
+    """ Shorten the string to length and add 3 dots
+
+    :param s: String to truncate
+    :param length: Truncate threshold
+    :type s: str
+    :type length: int
+    :return: Truncated string
+    """
     if len(s) > length:
         s = s[:length - 3] + '...'
     return s
@@ -150,21 +158,23 @@ class Job:
     job_id = None
     mem = 2.  # 2GB default memory
     node = None
-    exit_status = '-'
-    state = '?'
-    start = ''
-    runtime = ''
-    name = ''
-    memory = ''
-    cmd = ''
     pbs_log = None
     pbs_output = None
     finished = None
     start_time = None
     qstat = False
 
-    def cmd_trucated(self, length=32):
-        return truncate_str(self.cmd, length)
+    # Variables to print
+    name = ''
+    state = '?'
+    exit_status = '-'
+    start = ''
+    runtime = ''
+    memory = ''
+    cmd = ''
+
+    def __init__(self):
+        pass
 
     def parse_qstat(self, job):
         """ Object representing one Job as parsed from qstat output
@@ -193,6 +203,17 @@ class Job:
         self.qstat = True
 
     def parse_pbs_log(self, job_id, start_time, cmd, log_line):
+        """ Parse this job from $HOME/.pbs_log
+
+        :param job_id: Job ID
+        :param start_time: Time when the job was submitted
+        :param cmd: Submitted command
+        :param log_line: Entire line from .pbs_log
+        :type job_id: str
+        :type start_time: datetime
+        :type cmd: str
+        :type log_line: str
+        """
         self.job_id = int(job_id)
         self.start_time = start_time
         self.start = start_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -200,6 +221,11 @@ class Job:
         self.pbs_log = log_line
 
     def parse_pbs_output(self, output):
+        """ Parse this job from $HOME/pbs-output
+
+        :param output: Parsed output file
+        :type output: dict
+        """
         self.job_id = int(output['job_id'])
         self.exit_status = output.get('Exit status', self.exit_status)
         self.finished = output.get('finished')
@@ -500,7 +526,7 @@ def details(args):
 
         for job in jobs:
             print(columns % (job.job_id, truncate_str(job.name, 20), job.state, job.exit_status,
-                             job.start, job.runtime, job.memory, job.cmd_trucated(free_space)))
+                             job.start, job.runtime, job.memory, truncate_str(job.cmd, free_space)))
 
     if args.delete:
         if not len(jobs):
