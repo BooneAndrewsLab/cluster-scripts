@@ -1,13 +1,12 @@
 #!/usr/bin/env python
-
 import os
 import re
+import sys
 import time
 from subprocess import Popen, PIPE
 
-import sys
-
 HOME = os.getenv("HOME")
+USER = os.getenv("USER")
 PATH = os.getenv('PATH')
 CWD = os.getcwd()
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
@@ -15,6 +14,24 @@ PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 
 class SubmitException(Exception):
     pass
+
+
+def num_jobs_atm():
+    """ Count number of jobs for current user in all queues
+
+    :return: Number of jobs
+    :rtype: int
+    """
+    proc = Popen("/usr/bin/qstat -u {0} | grep {0} | wc -l".format(USER), shell=True, stdin=PIPE, stdout=PIPE,
+                 stderr=PIPE, close_fds=True, universal_newlines=True)
+
+    ret, err = proc.communicate()
+    if err:
+        raise SubmitException(err)
+
+    if ret:
+        return int(ret)
+    return 0
 
 
 def environment_exists(env_name):
@@ -57,7 +74,7 @@ def batch(iterable, n=1):
         yield iterable[ndx:min(ndx + n, size)]
 
 
-def _sanitize_cmd(bit):
+def sanitize_cmd(bit):
     """ Sanitize a submitted command, add quotations etc...
 
     :param bit: A part of command to sanitize
@@ -112,15 +129,14 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
-    walltime = '%02d:%02d:00' % (walltime, 60 * (walltime % 1))
+    walltime_str = '%02d:%02d:00' % (walltime, 60 * (walltime % 1))
     memory = '%dM' % (1024 * mem,)
-    cpu = '%d' % (cpu,)
     send_email = 'ae'
 
     if not email:
         send_email = 'n'
 
-    resources = ['walltime=%s' % (walltime,), 'mem=%s' % (memory,), 'nodes=1:ppn=%s' % (cpu,)]
+    resources = ['walltime=%s' % (walltime_str,), 'mem=%s' % (memory,), 'nodes=1:ppn=%d' % (cpu,)]
     resources = ','.join(resources)
 
     cmd_echo = cmd.replace('$', r'\$').replace('"', r'\"')
@@ -135,6 +151,16 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     if environment:
         job_setup = """source /etc/profile.d/conda.sh
 conda activate %s""" % environment
+
+    exposed_config = [
+        ('walltime', walltime),
+        ('mem', mem),
+        ('cpu', cpu),
+        ('name', job_name),
+        ('conda_environment', environment)
+    ]
+    # this is a more human readable format than json
+    job_config = ','.join("%s=%r" % item for item in exposed_config if item[1])
 
     if not pretend:
         proc = Popen('qsub', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
@@ -154,6 +180,7 @@ export PATH='{path}'
 export PBS_NCPU={cpu}
 echo -E '==> Run command    :' "{cmd_echo}"
 echo    '==> Execution host :' `hostname`
+echo    '==> Job config     :' "{job_config}"
 
 {job_setup}
 
@@ -169,6 +196,7 @@ echo    '==> Execution host :' `hostname`
             email=email,
             cmd_echo=cmd_echo,
             job_setup=job_setup,
+            job_config=job_config,
             cmd=cmd
         )
 
@@ -301,9 +329,9 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
             for arg_batch in batch(cmd_args, args.batch_size):
                 insert_idx = cmd.index('{}')
                 expanded_cmd = cmd[:insert_idx] + [('"%s"' % b) for b in arg_batch] + cmd[insert_idx + 1:]
-                commands.append(' '.join(map(_sanitize_cmd, expanded_cmd)))
+                commands.append(' '.join(map(sanitize_cmd, expanded_cmd)))
         else:
-            commands.append(' '.join(map(_sanitize_cmd, args.command)))
+            commands.append(' '.join(map(sanitize_cmd, args.command)))
     elif args.file:
         # commands from file should be formatted correctly already
         commands = [c.strip() for c in args.file if c.strip()]
