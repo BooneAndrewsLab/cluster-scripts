@@ -339,6 +339,7 @@ class Jobs:
         4.2 "walltime"
         4.3 "mem"
         4.4 "vmem"
+        TODO: parse contents only if the job is displayed or filtered
         """
         output_files = os.listdir(PBS_PATH)
         if len(output_files) > 1000:
