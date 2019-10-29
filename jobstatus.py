@@ -245,9 +245,22 @@ class Job:
         if not self.cmd:
             self.cmd = output.get('Run command', '-')
 
+        # Our new output file contains also requested resources, use them for extra display info
+        if 'name' in output:
+            self.name = output['name'].strip("'")
+
         self.runtime = output.get('walltime', self.runtime)
+        if 'rwalltime' in output and self.runtime:
+            rwalltime_str = float(output['rwalltime'])
+            rwalltime_str = '%02d:%02d:00' % (rwalltime_str, 60 * (rwalltime_str % 1))
+            self.runtime = '%s/%s' % (self.runtime, rwalltime_str)
 
         self.memory = output.get('mem', self.memory)
+        if 'rmem' in output and self.memory:
+            rmem = float(output['rmem'])
+            rmem = 1024 * 1024 * rmem
+            self.memory = '%s/%dkb' % (self.memory[:-2], rmem)
+
         self.pbs_output = output['pbs_output']
 
 
@@ -354,6 +367,8 @@ class Jobs:
                         param = param.strip()
 
                         if param == 'Resources used':
+                            out_data.update([v.split('=') for v in val.strip().split(',')])
+                        elif param == 'Job config':
                             out_data.update([v.split('=') for v in val.strip().split(',')])
                         else:
                             out_data[param] = val.strip()

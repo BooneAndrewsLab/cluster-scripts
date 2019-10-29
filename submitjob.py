@@ -153,9 +153,9 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
 conda activate %s""" % environment
 
     exposed_config = [
-        ('walltime', walltime),
-        ('mem', mem),
-        ('cpu', cpu),
+        ('rwalltime', walltime),
+        ('rmem', mem),
+        ('rcpu', cpu),
         ('name', job_name),
         ('conda_environment', environment)
     ]
