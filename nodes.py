@@ -113,7 +113,8 @@ def read_nodes(jobs):
     :return: List of nodes
     :rtype: list[Node]
     """
-    return sorted([node.grab_own_jobs(jobs) for node in map(Node, read_xml('pbsnodes -x'))], key=lambda n: n.name)
+    return sorted([node.grab_own_jobs(jobs) for node in map(Node, read_xml('pbsnodes -x'))],
+                  key=lambda n: ('offline' in n.state_set, n.name))
 
 
 def print_table(headers, data):
