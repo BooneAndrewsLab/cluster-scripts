@@ -343,9 +343,9 @@ class Jobs:
         """
         output_files = os.listdir(PBS_PATH)
         if len(output_files) > 1000:
-            print("WARNING: pbs-output folder contains %d files which will make jobstatus details slow. We suggest "
-                  "archiving old jobs using 'jobstatus archive' command. See jobstatus archive --help to find out "
-                  "how to use it." % (len(output_files),))
+            sys.stderr.write("WARNING: pbs-output folder contains %d files which will make jobstatus details slow. "
+                             "We suggest archiving old jobs using 'jobstatus archive' command. See jobstatus archive "
+                             "--help to find out how to use it.\n" % (len(output_files),))
 
         for out in output_files:
             name = ''
