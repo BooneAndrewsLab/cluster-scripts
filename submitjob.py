@@ -34,6 +34,24 @@ def num_jobs_atm():
     return 0
 
 
+def list_node_names():
+    import xml.etree.cElementTree as Et
+
+    proc = Popen('pbsnodes -x', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True,
+                 universal_newlines=True)
+
+    ret, err = proc.communicate()
+    if err:
+        raise SubmitException(err)
+
+    nodes = []
+    root = Et.fromstring(ret)
+    for name in root.iter('name'):
+        nodes.append(name.text)
+
+    return nodes
+
+
 def environment_exists(env_name):
     """Checks if conda environment exists. Throws SubmitException if conda is not available.
 
@@ -96,7 +114,7 @@ def sanitize_cmd(bit):
 
 
 def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None,
-           pretend=False, environment=None):
+           pretend=False, environment=None, node="1"):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
@@ -110,6 +128,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :param job_name: Name of the job as displayed by qstat. Default is command name, ie: awk
     :param pretend: Don't submit job to qsub, just print it out instead
     :param environment: Name of the conda environment to activate
+    :param node: Name of the node to use, "1" - any
     :type cmd: str
     :type walltime: float
     :type mem: float
@@ -121,6 +140,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :type job_name: str
     :type pretend: bool
     :type environment: str
+    :type node: str
     :return: Job id returned by qsub.
     :rtype: str
     """
@@ -136,7 +156,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     if not email:
         send_email = 'n'
 
-    resources = ['walltime=%s' % (walltime_str,), 'mem=%s' % (memory,), 'nodes=1:ppn=%d' % (cpu,)]
+    resources = ['walltime=%s' % (walltime_str,), 'mem=%s' % (memory,), 'nodes=%s:ppn=%d' % (node, cpu,)]
     resources = ','.join(resources)
 
     cmd_echo = cmd.replace('$', r'\$').replace('"', r'\"')
@@ -254,6 +274,7 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     # noinspection PyTypeChecker
     parser.add_argument('-c', '-cpu', '--cpu', type=int, default=1,
                         help='Number of CPUs required on a single node, default 1.')
+    parser.add_argument('-N', '-node', '--node', type=str, help='Request specific node by name. Ie: dc01')
     parser.add_argument('-e', '-conda-environment', '--conda-environment',
                         help='Activate this environment before running a job.')
     parser.add_argument('-f', '-file', '--file', type=argparse.FileType('rU'),
@@ -311,6 +332,17 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     if args.pretend:  # Don't write log if we don't submit
         args.disable_log = True
 
+    node = "1"
+    if args.node:
+        node = None
+        for existing_node in list_node_names():
+            if existing_node.startswith(args.node):
+                node = existing_node
+                break
+
+        if not node:
+            parser.error("%s node does not exist" % args.node)
+
     commands = []
 
     if args.command:
@@ -343,7 +375,7 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
 
         job_id = submit(cmd, args.walltime, args.mem, args.cpu, args.email, job_name=args.name, pretend=args.pretend,
-                        environment=args.conda_environment)
+                        environment=args.conda_environment, node=node)
         print(prefix + job_id)
 
         if not args.disable_log:
