@@ -399,6 +399,10 @@ class TimeDelta:
                 self.value_max = int(arg.split('-')[1].split('.')[0])
             else:
                 self.value_min = int(arg.split('.')[0])
+        elif ',' in arg:
+            self.compare = operator.contains
+            self.field = 'job_id_list'
+            self.value = [int(j) for j in arg.split(',')]
         elif re.match(r'^\d+[hdw]$', arg):
             self.field = 'date'
             self.value = parse_timearg(arg)
@@ -414,6 +418,9 @@ class TimeDelta:
                 elif not job.qstat and job.start_time:
                     if self.compare(job.start_time, self.value):
                         yield job
+            if self.field == 'job_id_list':
+                if self.compare(self.value, job.job_id):
+                    yield job
             elif self.field == 'job_id':
                 if self.compare(job.job_id, self.value_min):
                     if hasattr(self, 'value_max'):
@@ -660,8 +667,8 @@ def main():
     details_parser.add_argument('-l', '--limit-output', default='50',
                                 help='Limit output to either: number of lines, Job ID, time delta or name. '
                                      'The default is 50 lines. '
-                                     'Job ID can be in a form of range (i.e. 28327149-28327165). '
-                                     'Time delta unit can be one of: h(hours), d(days) or w(weeks).')
+                                     'Job ID can be in a form of range (i.e. 28327149-28327165) or a comma separated '
+                                     'list of ids. Time delta unit can be one of: h(hours), d(days) or w(weeks).')
     details_parser.add_argument('-o', '--output', default='table',
                                 help='Choose how to display output: table, jobid or cmd (default: table). '
                                      'TABLE dislays all available information about the job. '
