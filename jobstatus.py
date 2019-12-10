@@ -634,6 +634,14 @@ def archive(args):
     os.rename(LOG_PATH + '_bkp', LOG_PATH)
 
 
+def subcommand_header(name):
+    header = r"""
+/-------------{pad}-\
+| Subcommand: {name} |
+\-------------{pad}-/""".format(pad='-' * len(name), name=name)
+    return header
+
+
 def main():
     if len(sys.argv) == 1:  # Python 2 argparse hack... don't judge me
         print_all_jobs()
@@ -645,7 +653,10 @@ def main():
                      'Time delta unit can be one of: h(hours), d(days) or w(weeks)'
 
     parser = argparse.ArgumentParser(
-        description='Check job status. If no subcommand is specified it prints out a summary of all jobs.')
+        description='Check job status. If no subcommand is specified it prints out a summary of all jobs.',
+        add_help=False
+    )
+    parser.add_argument('-h', '--help', action='store_true', dest='help', default=False)
 
     command_parsers = parser.add_subparsers(title='Available subcommands',
                                             dest='command',
@@ -673,6 +684,16 @@ def main():
     archive_parser.add_argument('age', default='1w', nargs='?',
                                 help='Archive finished jobs older than AGE (default: 1 week). ' + timedelta_help)
     archive_parser.set_defaults(func=archive)
+
+    if len(sys.argv) == 2 and sys.argv[1] in ('-h', '--help'):
+        # Another py2 hack, for a global help
+        parser.print_help()
+
+        for subp in (details_parser, archive_parser):
+            print(subcommand_header(subp.prog))
+            subp.print_help()
+
+        parser.exit()
 
     args = parser.parse_args()
 
