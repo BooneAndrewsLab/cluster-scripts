@@ -1,34 +1,17 @@
 #!/usr/bin/env python
-import hashlib
 import operator
 import os
 import random
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from subprocess import Popen, PIPE
 from tarfile import TarFile
 
-HOME = os.getenv("HOME")
-USER = os.getenv("USER")
-WIDTH = os.getenv("COLUMNS")
-
-if not WIDTH:
-    with os.popen('stty size', 'r') as ttyin:
-        try:
-            _, WIDTH = map(int, ttyin.read().split())
-        except ValueError:
-            WIDTH = 120
-
-LOG_PATH = os.path.join(HOME, '.pbs_log')
-PBS_PATH = os.path.join(HOME, 'pbs-output')
-PBS_ARCHIVE_PATH = os.path.join(PBS_PATH, 'archive')
-USER_LABEL = '*%s' % (USER,)
-
-RE_DC = re.compile(r'(.+)[.]o(\d+)')
-# Adapted from: https://stackoverflow.com/a/14693789
-ANSI_ESC = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+from cluster.common import Cluster
+from cluster.config import USER, LOG_PATH, PBS_OUTPUT, USER_LABEL, PBS_ARCHIVE_PATH, HOME, RE_DC
+from cluster.tools import confirm_delete, generic_to_gb, parse_timearg, truncate_str, cache_cmd, parse_xml, print_table
 
 
 class JobStatusError(Exception):
@@ -37,128 +20,6 @@ class JobStatusError(Exception):
 
 class TimeDeltaError(Exception):
     """Custom error thrown when parsing time delta"""
-
-
-def confirm_delete(question, confirmation_string):
-    """Ask a question via raw_input() with a string the user must repeat to confirm.
-    Code adapted from: https://stackoverflow.com/a/3041990
-
-    :param question: Question to show
-    :param confirmation_string: String to be repeated
-    :type question: str
-    :type confirmation_string: str
-    :return: Conformation
-    :rtype: bool
-    """
-    input_func = input
-    if '__builtin__' in sys.modules:  # if we're using python2, fallback to raw_input
-        input_func = sys.modules['__builtin__'].raw_input
-
-    prompt = "\nConfirm by typing in the number of jobs to be deleted: "
-
-    while True:
-        sys.stdout.write(question + prompt)
-        choice = input_func().lower()
-        return choice == confirmation_string
-
-
-def parse_timearg(arg, since=datetime.now()):
-    """Parse a human readable timedelta option: 5h,3w,2d,... and subtracts it from the date
-
-    :param arg: timedelta string to parse
-    :param since: reference datetime, or now() by default
-    :type arg: string
-    :type since: datetime
-    :return: Adjusted datetime
-    :rtype: datetime
-    """
-    amount = int(arg[:-1])
-    period = arg[-1]
-
-    return since - timedelta(
-        **{{'h': 'hours', 'd': 'days', 'w': 'weeks'}[period]: amount}
-    )
-
-
-def generic_to_gb(val):
-    """Convert any random unit to GB
-
-    :param val: size in any unit (including two letter unit)
-    :type val: str
-    :return: size in GB
-    :rtype: float
-    """
-    unit = val[-2:].lower()
-    val = int(val[:-2])
-    return val / {'kb': 1048576., 'mb': 1024., 'gb': 1.}[unit]
-
-
-def cache_cmd(cmd, max_seconds=60, ignore_cache=False):
-    """ Run and cache the command for 1min
-
-    :param cmd: Command to execute
-    :param max_seconds: How many seconds should the output be cached
-    :param ignore_cache: Ignore cached output, re-run the command
-    :type cmd: str
-    :type max_seconds: int
-    :type ignore_cache: bool
-    :return: cmd output
-    :rtype: str
-    """
-
-    hsh = hashlib.sha1(cmd.encode()).hexdigest()
-    cached_file = os.path.join('/tmp', '{user}-{hash}'.format(user=USER, hash=hsh))
-    now = datetime.now()
-
-    if not ignore_cache and os.path.exists(cached_file):
-        age = now - datetime.fromtimestamp(os.path.getmtime(cached_file))
-        if age.total_seconds() < max_seconds:
-            with open(cached_file) as cached_in:
-                return cached_in.read()
-
-    proc = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
-    ret, err = proc.communicate()
-    if err:
-        raise Exception("Can't run %s: %s" % (cmd, err))
-
-    ret = ANSI_ESC.sub('', ret)
-
-    with open(cached_file, 'w') as cached_out:
-        cached_out.write(ret)
-
-    return ret
-
-
-def read_xml(cmd, *args, **kwargs):
-    """ Execute cmd and parse the output XML, any additional args are passed to cache_cmd
-
-    :param cmd: Command to run
-    :type cmd: str
-    :return: List of children elements in xml root
-    :rtype: list[Et.Element]
-    """
-    import xml.etree.cElementTree as Et
-
-    qstat = cache_cmd(cmd, *args, **kwargs)
-
-    if not qstat:
-        return []
-
-    return Et.fromstring(qstat)  # trim any color escape sequences returned by our command
-
-
-def truncate_str(s, length=32):
-    """ Shorten the string to length and add 3 dots
-
-    :param s: String to truncate
-    :param length: Truncate threshold
-    :type s: str
-    :type length: int
-    :return: Truncated string
-    """
-    if len(s) > length:
-        s = s[:length - 3] + '...'
-    return s
 
 
 class Job:
@@ -291,7 +152,7 @@ class Jobs:
         ones are: resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
         This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
         """
-        for jobele in read_xml('/usr/bin/qstat -x', ignore_cache=not self.cache_cmds):
+        for jobele in parse_xml(cache_cmd('/usr/bin/qstat -x', ignore_cache=not self.cache_cmds)):
             job = dict([(attr.tag, attr.text) for attr in jobele])
             job['Job_Id'] = job['Job_Id'].split('.')[0]
 
@@ -341,7 +202,7 @@ class Jobs:
         4.4 "vmem"
         TODO: parse contents only if the job is displayed or filtered
         """
-        output_files = os.listdir(PBS_PATH)
+        output_files = os.listdir(PBS_OUTPUT)
         if len(output_files) > 1000:
             sys.stderr.write("WARNING: pbs-output folder contains %d files which will make jobstatus details slow. "
                              "We suggest archiving old jobs using 'jobstatus archive' command. See jobstatus archive "
@@ -363,11 +224,11 @@ class Jobs:
             # Set ctime of the output file as execution end time
             out_data = {
                 'job_id': job_id,
-                'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_PATH, out))),
-                'pbs_output': os.path.join(PBS_PATH, out),
+                'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_OUTPUT, out))),
+                'pbs_output': os.path.join(PBS_OUTPUT, out),
                 'name': name}
 
-            with open(os.path.join(PBS_PATH, out)) as fin:
+            with open(os.path.join(PBS_OUTPUT, out)) as fin:
                 for line in fin:
                     if line.startswith('==>'):  # Parse only useful details, ignore job output for now
                         param, val = line[4:].strip().split(':', 1)
@@ -489,6 +350,11 @@ def details(args):
     :type args: argparse.Namespace
     """
     # Don't cache commands if we're deleting jobs, we need fresh status
+    cluster = Cluster(jobs=True)
+    cluster.filter_job_owner('zluo')
+    for job in cluster.jobs:
+        print(job, job.user)
+
     jobs = Jobs.collect(cache_cmds=not args.delete)
 
     filtering = True in (args.print_running, args.print_queued, args.print_completed, args.print_failed)
@@ -549,23 +415,16 @@ def details(args):
         for job in jobs:
             print(job.cmd)
     else:
-        columns = ['%-8s', '%-20s', '%-11s', '%-4s', '%-19s', '%-18s', '%-18s', '%-32s']
-        headers = ('Job ID', 'Name', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command')
-
-        out_len = ' | '.join(columns[:-1]) % headers[:-1]
-
-        free_space = max(32, WIDTH - 3 - len(out_len))
-
-        columns[-1] = '%%-%ds' % free_space
-
-        columns = ' | '.join(columns)
-        header = columns % headers
-        print(header)
-        print('-' * len(header))
-
+        data = []
         for job in jobs:
-            print(columns % (job.job_id, truncate_str(job.name, 20), job.state, job.exit_status,
-                             job.start, job.runtime, job.memory, truncate_str(job.cmd, free_space)))
+            data.append(
+                [job.job_id, truncate_str(job.name, 20), job.state, job.exit_status, job.start, job.runtime, job.memory,
+                 job.cmd])
+
+        print_table(
+            ['Job ID', 'Name', 'Status', 'Exit', 'Start Time', 'Elapsed/Total Time', 'Used Memory', 'Command'],
+            data
+        )
 
     if args.delete:
         jobs = list(jobs)
