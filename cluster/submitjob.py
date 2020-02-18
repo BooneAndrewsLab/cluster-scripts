@@ -136,7 +136,7 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
             if '{}' not in cmd:
                 cmd.append('{}')  # add the args placeholder to the end for appending
 
-            cmd_args = [l.strip() for l in args.args]
+            cmd_args = [arg_fragment.strip() for arg_fragment in args.args]
 
             for arg_batch in batch(cmd_args, args.batch_size):
                 insert_idx = cmd.index('{}')

@@ -3,12 +3,18 @@ import os
 import sys
 import xml.etree.ElementTree as Et
 from datetime import datetime, timedelta
+from string import Template
 from subprocess import PIPE, Popen
 
-from cluster.config import ANSI_ESC, WIDTH, USER
+from cluster.config import ANSI_ESC, WIDTH, USER, JOB_TEMPLATE
 
 
 def get_input():
+    """ Get input function for current python version
+
+    :return: appropriate input function
+    :rtype: typing.Callable
+    """
     input_func = input
     if '__builtin__' in sys.modules:  # if we're using python2, fallback to raw_input
         # noinspection PyUnresolvedReferences
@@ -75,6 +81,15 @@ def confirm_delete(question, confirmation_string):
 
 
 def run_cmd(cmd, inp=None):
+    """ Run command using subprocess lib
+
+    :param cmd: Command to run
+    :param inp: Optional input to stdin
+    :type cmd: str
+    :type inp: str
+    :return: stdout of executed command
+    :rtype: str
+    """
     proc = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, universal_newlines=True)
     out, err = proc.communicate(input=inp)
     if err:
@@ -115,6 +130,13 @@ def cache_cmd(cmd, max_seconds=60, ignore_cache=False):
 
 
 def parse_xml(xml_string):
+    """ Small convenient method that can handle empty string xml
+
+    :param xml_string: string form on XML to parse
+    :type xml_string: str
+    :return: Parsed XML
+    :rtype: Et.Element
+    """
     if not xml_string:
         return []
 
@@ -234,3 +256,15 @@ def truncate_str(s, length=32):
     if len(s) > length:
         s = s[:length - 3] + '...'
     return s
+
+
+def get_job_template(path=JOB_TEMPLATE):
+    """ Get default or specific PBS job template string
+
+    :param path: Path to template, or default from config
+    :type path: str
+    :return: PBS script template
+    :rtype: string.Template
+    """
+    with open(path) as tmplt:
+        return Template(tmplt.read())

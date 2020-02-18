@@ -12,6 +12,9 @@ LOG_PATH = os.path.join(HOME, '.pbs_log')
 PBS_OUTPUT = os.path.join(HOME, 'pbs-output')
 PBS_ARCHIVE_PATH = os.path.join(PBS_OUTPUT, 'archive')
 
+SCRIPT_PATH = os.path.dirname(os.path.abspath(__file__))
+JOB_TEMPLATE = os.path.join(SCRIPT_PATH, 'qsub_job.template')
+
 # Get terminal width for nicer printing
 WIDTH = os.getenv("COLUMNS")
 

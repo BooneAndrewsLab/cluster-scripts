@@ -4,11 +4,11 @@ import time
 from datetime import datetime
 
 from cluster.config import CWD, PBS_OUTPUT, PATH
-from cluster.tools import run_cmd
+from cluster.tools import run_cmd, get_job_template
 
 
 def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None,
-           pretend=False, environment=None, node="1"):
+           pretend=False, environment=None, node="1", job_template=None):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
@@ -23,6 +23,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :param pretend: Don't submit job to qsub, just print it out instead
     :param environment: Name of the conda environment to activate
     :param node: Name of the node to use, "1" - any
+    :param job_template: PBS job template
     :type cmd: str
     :type walltime: float
     :type mem: float
@@ -35,6 +36,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :type pretend: bool
     :type environment: str
     :type node: str
+    :type job_template: string.Template
     :return: Job id returned by qsub.
     :rtype: str
     """
@@ -71,59 +73,45 @@ conda activate %s""" % environment
         ('rmem', mem),
         ('rcpu', cpu),
         ('name', job_name),
-        ('conda_environment', environment)
+        ('conda_environment', environment),
+        ('wd', wd)
     ]
     # this is a more human readable format than json
     job_config = ','.join("%s=%r" % item for item in exposed_config if item[1])
 
+    if not job_template:
+        # Grab default template if None
+        job_template = get_job_template()
+
+    pbs = job_template.safe_substitute(
+        pbs_output=output_dir,
+        resources=resources,
+        name=job_name,
+        cwd=wd,
+        path=path,
+        cpu=cpu,
+        send_email=send_email,
+        email=email,
+        cmd_echo=cmd_echo,
+        job_setup=job_setup,
+        job_config=job_config,
+        cmd=cmd
+    )
+
     if not pretend:
-        pbs = """#PBS -S /bin/bash
-#PBS -e localhost:{pbs_output}
-#PBS -o localhost:{pbs_output}
-#PBS -j oe
-#PBS -l {resources}
-#PBS -m {send_email}
-#PBS -M {email}
-#PBS -r n
-#PBS -V
-#PBS -N {name}
-cd {cwd}
-export PATH='{path}'
-export PBS_NCPU={cpu}
-echo -E '==> Run command    :' "{cmd_echo}"
-echo    '==> Execution host :' `hostname`
-echo    '==> Job config     :' "{job_config}"
-
-{job_setup}
-
-{cmd}
-    """.format(
-            pbs_output=output_dir,
-            resources=resources,
-            name=job_name,
-            cwd=wd,
-            path=path,
-            cpu=cpu,
-            send_email=send_email,
-            email=email,
-            cmd_echo=cmd_echo,
-            job_setup=job_setup,
-            job_config=job_config,
-            cmd=cmd
-        )
-
         job_id = run_cmd('qsub', inp=pbs)
-
         return job_id.strip()
     else:
         return cmd
 
 
 def submit_jobs(commands, job_log, is_pretend, **kwargs):
+    job_template = get_job_template()
+
     for i, cmd in enumerate(commands):
         prefix = '' if len(commands) == 1 else ('%d: ' % i)
 
-        job_id = submit(cmd, **kwargs)
+        job_id = submit(cmd, job_template=job_template, **kwargs)
         print(prefix + job_id)
 
         if job_log:

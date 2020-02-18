@@ -1,7 +1,10 @@
+import os
+import sys
+from collections import defaultdict
 from datetime import datetime
 
-from cluster.config import RE_JOB, UP_STATES
-from cluster.tools import read_xml
+from cluster.config import RE_JOB, UP_STATES, USER, LOG_PATH, PBS_OUTPUT, RE_DC
+from cluster.tools import read_xml, generic_to_gb, parse_xml, cache_cmd
 
 
 class Node:
@@ -37,12 +40,10 @@ class Node:
         """ Iterate through the job list and adopt jobs that are executing on this nodes.
 
         :param jobs: Jobs read from qstat
-        :type jobs: list[Job]
+        :type jobs: dict[Job]
         :return: Reference to this node for chaining purposes.
         :rtype: Node
         """
-        jobs = dict([(j.job_id, j) for j in jobs])  # Generate job index
-
         self.jobs_qstat = [j for j in jobs.values() if j.node == self.name]
         self.mem_res = sum([j.mem for j in self.jobs_qstat])
         self.orphans = [jobs[j] for j in self.jobs_node if not jobs[j].node]
@@ -58,6 +59,7 @@ class Job:
     finished = None
     start_time = None
     qstat = False
+    user = None
 
     # Variables to print
     name = ''
@@ -68,63 +70,222 @@ class Job:
     memory = ''
     cmd = ''
 
-    def __init__(self, jobele):
+    def parse_qstat(self, job):
         """ Object representing one Job as parsed from qstat output
 
-        :param jobele: Job details from qstat
-        :type jobele: Et.Element
+        :param job: Job details from qstat
+        :type job: dict
         """
-        job = dict([(attr.tag, attr.text) for attr in jobele])  # python 2.6 compat
-        resources = dict([(r.tag, r.text) for r in jobele.find('Resource_List')])  # python 2.6 compat
-
-        self.job_id = job['Job_Id'].split('.')[0]
+        self.job_id = int(job['Job_Id'].split('.')[0])
         self.user = job['euser']
-        self.mem = int(resources.get('mem', '2048mb')[:-2]) / 1024.  # 2GB default memory
-        self.node = None
+        if 'Resource_List.mem' in job:
+            self.mem = generic_to_gb(job['Resource_List.mem'])
+
         if job.get('exec_host'):
             self.node = job['exec_host'].split('.')[0]
 
-        for ts in ['qtime', 'mtime', 'ctime', 'etime']:
-            if ts in job:
-                job[ts] = datetime.fromtimestamp(int(job[ts]))
+        self.state = job.get('job_state', self.state)
+        if 'queue' in job:
+            self.state += ' (%s)' % job['queue']
+
+        if 'Resource_List.walltime' in job:
+            self.runtime = '%s/%s' % (job.get('resources_used.walltime', '00:00:00'), job['Resource_List.walltime'])
+
+        self.name = job.get('Job_Name', self.name)
+
+        used_mem = generic_to_gb(job.get('resources_used.mem', '0gb'))
+        self.memory = '%.1f/%.1fG (%3d%%)' % (used_mem, self.mem, used_mem / self.mem * 100)
+        self.qstat = True
+
+    def parse_pbs_log(self, job_id, start_time, cmd, log_line):
+        """ Parse this job from $HOME/.pbs_log
+
+        :param job_id: Job ID
+        :param start_time: Time when the job was submitted
+        :param cmd: Submitted command
+        :param log_line: Entire line from .pbs_log
+        :type job_id: str
+        :type start_time: datetime
+        :type cmd: str
+        :type log_line: str
+        """
+        self.job_id = int(job_id)
+        self.user = USER
+        self.start_time = start_time
+        self.start = start_time.strftime('%Y-%m-%d %H:%M:%S')
+        self.cmd = cmd[1:-1]
+        self.pbs_log = log_line
+
+    def parse_pbs_output(self, output):
+        """ Parse this job from $HOME/pbs-output
+
+        :param output: Parsed output file
+        :type output: dict
+        """
+        self.job_id = int(output['job_id'])
+        self.user = USER
+        self.exit_status = output.get('Exit status', self.exit_status)
+        self.finished = output.get('finished')
+
+        if self.exit_status not in ('-', '0'):
+            self.state = 'Failed'
+        else:
+            self.state = 'Completed'
+
+        if not self.cmd:
+            self.cmd = output.get('Run command', '-')
+
+        # Our new output file contains also requested resources, use them for extra display info
+        if 'name' in output:
+            self.name = output['name'].strip("'")
+
+        self.runtime = output.get('walltime', self.runtime)
+        if 'rwalltime' in output and self.runtime:
+            rwalltime_str = float(output['rwalltime'])
+            rwalltime_str = '%02d:%02d:00' % (rwalltime_str, 60 * (rwalltime_str % 1))
+            self.runtime = '%s/%s' % (self.runtime, rwalltime_str)
+
+        self.memory = output.get('mem', self.memory)
+        if 'rmem' in output and self.memory:
+            rmem = float(output['rmem'])
+            rmem = 1024 * 1024 * rmem
+            self.memory = '%s/%dkb' % (self.memory[:-2], rmem)
+
+        self.pbs_output = output['pbs_output']
 
     def __str__(self):
-        return self.job_id
+        return str(self.job_id)
 
 
 class Cluster:
-    """
-    :param jobs: List of jobs
-    :param nodes: List of nodes
-    :type jobs: list[Job]
-    :type nodes: list[Node]
-    """
-
-    jobs = []
+    jobs = defaultdict(Job)
     nodes = []
 
-    def __init__(self, jobs=False, nodes=False, link=False):
+    def __init__(self, nodes=False, link=False, jobs_qstat=False, jobs_log=False, jobs_pbs=False, cached=True,
+                 own=False):
         """
 
-        :param jobs: Load jobs
+        :param jobs_qstat: Load jobs from qstat
         :param nodes: Load nodes
         :param link: Link jobs to nodes
-        :type jobs: bool
+        :type jobs_qstat: bool
         :type nodes: bool
         :type link: bool
         """
-        if jobs:
-            self.load_jobs()
+        self.cached = cached
+
+        if not own and (jobs_log or jobs_pbs):  # Restrict reading only own jobs if parsing also log or pbs
+            own = True
+
         if nodes:
             self.load_nodes()
+
+        if jobs_qstat:
+            self.read_qstatx(not own)
+        if jobs_log:
+            self.read_pbs_log()
+        if jobs_pbs:
+            self.read_pbs_output()
+
         if link:
             self.link_jobs_to_nodes()
 
-    def load_jobs(self):
-        """ Parse qstat -x output to get the most details about
-        queued/running jobs of the user that executes this script.
+    def read_qstatx(self, read_all):
+        """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this
+        script. Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most useful
+        ones are: resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
+        This is the XML parsing version. Should be a bit safer than parsing regular output with RE.
         """
-        self.jobs = list(map(Job, read_xml('/usr/bin/qstat -x')))
+        for jobele in parse_xml(cache_cmd('/usr/bin/qstat -x', ignore_cache=not self.cached)):
+            job = dict([(attr.tag, attr.text) for attr in jobele])
+            job['Job_Id'] = job['Job_Id'].split('.')[0]
+
+            if read_all or job.get('euser') == USER:
+                for ts in ['qtime', 'mtime', 'ctime', 'etime']:
+                    if ts in job:
+                        job[ts] = datetime.fromtimestamp(int(job[ts]))
+
+                if 'Resource_List' in job:
+                    job.pop('Resource_List')
+                    for rl in jobele.find('Resource_List'):
+                        job['Resource_List.%s' % rl.tag] = rl.text
+
+                if 'resources_used' in job:
+                    job.pop('resources_used')
+                    for rl in jobele.find('resources_used'):
+                        job['resources_used.%s' % rl.tag] = rl.text
+
+                self.jobs[job['Job_Id']].parse_qstat(job)
+
+    def read_pbs_log(self):
+        """Parse .pbs_log file created by the new submitjob script for some extra info on running/finished jobs. Returns
+        job_id -> (timestamp, command) pairs.
+        """
+        if os.path.isfile(LOG_PATH):
+            with open(LOG_PATH) as log:
+                for log_line in log:
+                    timestamp, job_id, cmd = log_line.strip().split(None, 2)
+                    job_id = job_id.split('.')[0]
+                    try:
+                        start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]")
+                    except ValueError:
+                        start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S]")
+
+                    self.jobs[job_id].parse_pbs_log(job_id, start_time, cmd, log_line)
+
+    def read_pbs_output(self):
+        """Parse all job output files in ~/pbs-output/ folder and return the details as a job_id -> job_details pairs.
+        Known job_details keys are:
+        1. "Run command"
+        2. "Execution host"
+        3. "Exit status"
+        "Resources used" is parsed further into:
+        4.1 "cput"
+        4.2 "walltime"
+        4.3 "mem"
+        4.4 "vmem"
+        TODO: parse contents only if the job is displayed or filtered
+        """
+        output_files = os.listdir(PBS_OUTPUT)
+        if len(output_files) > 1000:
+            sys.stderr.write("WARNING: pbs-output folder contains %d files which will make jobstatus details slow. "
+                             "We suggest archiving old jobs using 'jobstatus archive' command. See jobstatus archive "
+                             "--help to find out how to use it.\n" % (len(output_files),))
+
+        for out in output_files:
+            name = ''
+
+            # Parse only job files ending with:
+            if out.endswith('.ccbr.utoronto.ca.OU'):  # banting cluster, sometimes DC
+                job_id = out.split('.')[0]
+            elif RE_DC.match(out):  # new DC cluster format... ie: python.o70
+                matcher = RE_DC.match(out)
+                name = matcher.group(1)
+                job_id = matcher.group(2)
+            else:
+                continue
+
+            # Set ctime of the output file as execution end time
+            out_data = {
+                'job_id': job_id,
+                'finished': datetime.fromtimestamp(os.path.getctime(os.path.join(PBS_OUTPUT, out))),
+                'pbs_output': os.path.join(PBS_OUTPUT, out),
+                'name': name}
+
+            with open(os.path.join(PBS_OUTPUT, out)) as fin:
+                for line in fin:
+                    if line.startswith('==>'):  # Parse only useful details, ignore job output for now
+                        param, val = line[4:].strip().split(':', 1)
+                        param = param.strip()
+
+                        if param == 'Resources used':
+                            out_data.update([v.split('=') for v in val.strip().split(',')])
+                        elif param == 'Job config':
+                            out_data.update([v.split('=') for v in val.strip().split(',')])
+                        else:
+                            out_data[param] = val.strip()
+
+            self.jobs[job_id].parse_pbs_output(out_data)
 
     def load_nodes(self):
         """ Parse pbsnodes -x output to get node details.
@@ -138,8 +299,10 @@ class Cluster:
     def filter_node_states(self, states):
         self.nodes = list(filter(lambda x: not states.difference(x.state_set), self.nodes))
 
-    def filter_job_owner(self, owner):
-        self.jobs = list(filter(lambda x: x.user == owner, self.jobs))
+    def jobs_list(self):
+        return sorted(self.jobs.values(), key=lambda x: x.job_id, reverse=True)
+    # def filter_job_owner(self, owner):
+    #     self.jobs = list(filter(lambda x: x.user == owner, self.jobs))
 
 
 def list_node_names():

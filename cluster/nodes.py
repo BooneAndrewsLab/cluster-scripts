@@ -11,7 +11,7 @@ def check_status(args):
     :param args: Arguments from argparse
     :type args: argparse.Namespace
     """
-    cluster = Cluster(jobs=True, nodes=True, link=True)
+    cluster = Cluster(jobs_qstat=True, nodes=True, link=True)
     nodes = []
 
     if args.filter_states:
