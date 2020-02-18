@@ -26,6 +26,8 @@ setup(
     long_description_content_type='text/markdown',
     author='Matej Usaj',
     author_email='m.usaj@utoronto.ca',
+    package_data={'': ['cluster/qsub_job.template']},
+    include_package_data=True,
     url='https://github.com/BooneAndrewsLab/cluster-scripts',
     download_url='https://github.com/BooneAndrewsLab/cluster-scripts/archive/master.zip',
 
