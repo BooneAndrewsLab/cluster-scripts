@@ -53,7 +53,8 @@ setup(
         'console_scripts': [
             'deleteallmyjobs=cluster.deleteallmyjobs:main',
             'nodes=cluster.nodes:main',
-            'submitjob=cluster.submitjob:main'
+            'submitjob=cluster.submitjob:main',
+            'jobstatus=cluster.jobstatus:main'
         ]
     },
 )
