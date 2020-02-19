@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 
 USER = os.getenv("USER")
 HOME = os.getenv("HOME")
@@ -19,8 +20,11 @@ JOB_TEMPLATE = os.path.join(SCRIPT_PATH, 'qsub_job.template')
 WIDTH = os.getenv("COLUMNS")
 
 if not WIDTH:
-    with os.popen('stty size', 'r') as ttyin:
-        _, WIDTH = map(int, ttyin.read().split())
+    try:
+        stty_size = subprocess.check_output(['stty', 'size'], stderr=subprocess.STDOUT)
+        _, WIDTH = map(int, stty_size.decode().split())
+    except subprocess.CalledProcessError:
+        WIDTH = 120  # Default width, ie: called remotely via pssh or similar
 
 # Some useful constants, python 2.6 compatible
 UP_STATES = set(("job-exclusive", "job-sharing", "reserve", "free", "busy", "time-shared"))
