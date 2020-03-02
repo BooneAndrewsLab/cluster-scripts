@@ -268,3 +268,12 @@ def get_job_template(path=JOB_TEMPLATE):
     """
     with open(path) as tmplt:
         return Template(tmplt.read())
+
+
+def i_am_root():
+    """ Are we root?
+
+    :rtype: bool
+    :return: Wheter we're executing this as root or not
+    """
+    return os.getuid() == 0
