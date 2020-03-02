@@ -3,11 +3,11 @@ import os
 import re
 
 from cluster.config import USER
-from cluster.tools import query_yes_no, run_cmd
+from cluster.tools import query_yes_no, run_cmd, i_am_root
 
 
 def main():
-    if os.getuid() == 0:
+    if i_am_root():
         print("This script can not run by root!")
         exit(1)
 
