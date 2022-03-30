@@ -56,6 +56,9 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
     parser.add_argument('-N', '-node', '--node', type=str, help='Request specific node by name. Ie: dc01')
     parser.add_argument('-e', '-conda-environment', '--conda-environment',
                         help='Activate this environment before running a job.')
+    parser.add_argument('-conda-profile', '--conda-profile',
+                        help='Path to conda profile. Used for local conda installations.',
+                        default='/etc/profile.d/conda.sh')
     parser.add_argument('-f', '-file', '--file', type=argparse.FileType('rU'),
                         help='Read commands from a file, one per line. If a "command" is specified as a positional '
                              'argument this will be ignored.')
@@ -162,6 +165,7 @@ EXAMPLE #2: submitjob my_command.py -w 12 -m 5
         job_name=args.name,
         pretend=args.pretend,
         environment=args.conda_environment,
+        conda_profile=args.conda_profile,
         node=node
     )
 

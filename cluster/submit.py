@@ -8,7 +8,7 @@ from cluster.tools import run_cmd, get_job_template
 
 
 def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OUTPUT, path=PATH, job_name=None,
-           pretend=False, environment=None, node="1", job_template=None):
+           pretend=False, environment=None, conda_profile="/etc/profile.d/conda.sh", node="1", job_template=None):
     """Submits a command to the cluster
 
     :param cmd: The command to run.
@@ -64,9 +64,9 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
         job_name = re.sub(r'^\d+', '', job_name)  # Remove any leading digits, otherwise qsub will throw an error
 
     job_setup = ''
-    if environment:
-        job_setup = """source /etc/profile.d/conda.sh
-conda activate %s""" % environment
+    if environment and conda_profile:
+        job_setup = """source %s
+conda activate %s""" % (conda_profile, environment)
 
     exposed_config = [
         ('rwalltime', walltime),
