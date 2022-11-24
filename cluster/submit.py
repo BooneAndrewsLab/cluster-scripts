@@ -22,6 +22,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :param job_name: Name of the job as displayed by qstat. Default is command name, ie: awk
     :param pretend: Don't submit job to qsub, just print it out instead
     :param environment: Name of the conda environment to activate
+    :param conda_profile: Path to conda init script, to support local conda installs. Default is system profile
     :param node: Name of the node to use, "1" - any
     :param job_template: PBS job template
     :type cmd: str
@@ -35,6 +36,7 @@ def submit(cmd, walltime=24, mem=2, cpu=1, email=None, wd=CWD, output_dir=PBS_OU
     :type job_name: str
     :type pretend: bool
     :type environment: str
+    :type conda_profile: str
     :type node: str
     :type job_template: string.Template
     :return: Job id returned by qsub.

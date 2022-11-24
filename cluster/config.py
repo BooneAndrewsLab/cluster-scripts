@@ -34,3 +34,11 @@ RE_DC = re.compile(r'(.+)[.]o(\d+)')
 
 # Adapted from: https://stackoverflow.com/a/14693789
 ANSI_ESC = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+
+CLUSTER_NAME = 'unknown'
+if os.path.exists('/etc/torque/server_name'):
+    CLUSTER_NAME = open('/etc/torque/server_name', 'r').read().strip()
+elif os.path.exists('/etc/pbs.conf'):
+    for line in open('/etc/pbs.conf', 'r').readlines():
+        if line.startswith('PBS_SERVER'):
+            CLUSTER_NAME = line.split('=', maxsplit=1)[-1].strip()

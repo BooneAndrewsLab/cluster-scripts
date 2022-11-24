@@ -1,9 +1,10 @@
+import json
 import os
 import sys
 from collections import defaultdict
 from datetime import datetime
 
-from cluster.config import RE_JOB, UP_STATES, USER, LOG_PATH, PBS_OUTPUT, RE_DC
+from cluster.config import RE_JOB, UP_STATES, USER, LOG_PATH, PBS_OUTPUT, RE_DC, CLUSTER_NAME
 from cluster.tools import read_xml, generic_to_gb, parse_xml, cache_cmd
 
 
@@ -97,6 +98,10 @@ class Job:
         self.memory = '%.1f/%.1fG (%3d%%)' % (used_mem, self.mem, used_mem / self.mem * 100)
         self.qstat = True
 
+        if 'stime' in job:
+            self.start_time = job['stime']
+            self.start = self.start_time.strftime('%Y-%m-%d %H:%M:%S')
+
     def parse_pbs_log(self, job_id, start_time, cmd, log_line):
         """ Parse this job from $HOME/.pbs_log
 
@@ -181,14 +186,47 @@ class Cluster:
             self.load_nodes()
 
         if jobs_qstat:
-            self.read_qstatx(not own)
+            try:
+                self.read_qstatj(not own)
+            except Exception:  # There is no JSON format option
+                self.read_qstatx(not own)
+
         if jobs_log:
             self.read_pbs_log()
+
         if jobs_pbs:
             self.read_pbs_output()
 
         if link:
             self.link_jobs_to_nodes()
+
+    def read_qstatj(self, read_all):
+        """Parse qstat -f -F json output to get the most details about queued/running jobs of the user that executes
+        this script. Returns job_id -> job_details pairs. There are too many job_details keys to list here, the most
+        useful ones are: resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
+        This is the JSON parsing version. Should be a bit safer than parsing regular output with RE.
+        """
+        job_json = json.loads(cache_cmd('/usr/bin/qstat -f -F json', ignore_cache=not self.cached)).get('Jobs', [])
+
+        for jobid, job in job_json.items():
+            job['Job_Id'] = jobid.split('.')[0]
+            job['euser'] = job['Job_Owner'].split('@')[0]
+
+            if read_all or job.get('euser') == USER:
+                for ts in ['qtime', 'mtime', 'ctime', 'etime', 'stime']:
+                    if ts in job:
+                        # "Tue Nov 22 12:18:12 2022"
+                        job[ts] = datetime.strptime(job[ts], '%a %b %d %H:%M:%S %Y')
+
+                if 'Resource_List' in job:
+                    for resource, res_value in job['Resource_List'].items():
+                        job['Resource_List.%s' % resource] = res_value
+
+                if 'resources_used' in job:
+                    for resource, res_value in job['resources_used'].items():
+                        job['resources_used.%s' % resource] = res_value
+
+                self.jobs[job['Job_Id']].parse_qstat(job)
 
     def read_qstatx(self, read_all):
         """Parse qstat -x output to get the most details about queued/running jobs of the user that executes this
@@ -225,6 +263,10 @@ class Cluster:
             with open(LOG_PATH) as log:
                 for log_line in log:
                     timestamp, job_id, cmd = log_line.strip().split(None, 2)
+
+                    if CLUSTER_NAME not in job_id:
+                        continue
+
                     job_id = job_id.split('.')[0]
                     try:
                         start_time = datetime.strptime(timestamp, "[%Y-%m-%dT%H:%M:%S.%f]")
@@ -256,7 +298,7 @@ class Cluster:
             name = ''
 
             # Parse only job files ending with:
-            if out.endswith('.ccbr.utoronto.ca.OU'):  # banting cluster, sometimes DC
+            if out.endswith('%s.OU' % CLUSTER_NAME):  # Read only output for this cluster, if home folder is shared
                 job_id = out.split('.')[0]
             elif RE_DC.match(out):  # new DC cluster format... ie: python.o70
                 matcher = RE_DC.match(out)
@@ -301,8 +343,6 @@ class Cluster:
 
     def jobs_list(self):
         return sorted(self.jobs.values(), key=lambda x: x.job_id, reverse=True)
-    # def filter_job_owner(self, owner):
-    #     self.jobs = list(filter(lambda x: x.user == owner, self.jobs))
 
 
 def list_node_names():
