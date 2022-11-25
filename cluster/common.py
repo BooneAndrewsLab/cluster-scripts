@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from cluster.config import RE_JOB, UP_STATES, USER, LOG_PATH, PBS_OUTPUT, RE_DC, CLUSTER_NAME
-from cluster.tools import read_xml, generic_to_gb, parse_xml, cache_cmd
+from cluster.tools import read_xml, generic_to_gb, parse_xml, cache_cmd, run_cmd
 
 
 class Node:
@@ -13,13 +13,12 @@ class Node:
     orphans = []
     mem_res = 0
 
-    def __init__(self, nodeele):
+    def __init__(self, node):
         """ Object representing one node, as parsed from pbsnodes output
 
         :param nodeele: Node details from pbsnodes
         :type nodeele: Et.Element
         """
-        node = dict([(attr.tag, attr.text) for attr in nodeele])  # python 2.6 compat
         self.raw = node
         status = dict([kv.split('=') for kv in node['status'].split(',')]) if 'status' in node else {}
 
@@ -83,7 +82,7 @@ class Job:
             self.mem = generic_to_gb(job['Resource_List.mem'])
 
         if job.get('exec_host'):
-            self.node = job['exec_host'].split('.')[0]
+            self.node = job['exec_host'].split('/')[0].split('.')[0]
 
         self.state = job.get('job_state', self.state)
         if 'queue' in job:
@@ -332,7 +331,20 @@ class Cluster:
     def load_nodes(self):
         """ Parse pbsnodes -x output to get node details.
         """
-        self.nodes = sorted(list(map(Node, read_xml('pbsnodes -x'))), key=lambda n: ('offline' in n.state_set, n.name))
+        self.nodes = []
+        try:
+            for nodeele in read_xml('pbsnodes -x'):
+                self.nodes.append(Node(dict([(attr.tag, attr.text) for attr in nodeele]))) # python 2.6 compat
+        except:
+            nodes_json = json.loads(run_cmd('pbsnodes -a -F json'))
+            for node_id, node_data in nodes_json['nodes'].items():
+                node_data['name'] = node_id
+                node_data['np'] = node_data['resources_available']['ncpus']
+                node_data['status'] = '='.join(['physmem', node_data['resources_available']['mem']])
+                node_data['jobs'] = ','.join(node_data.get('jobs', []))
+                self.nodes.append(Node(node_data))
+
+        self.nodes = sorted(self.nodes, key=lambda n: ('offline' in n.state_set, n.name))
 
     def link_jobs_to_nodes(self):
         for node in self.nodes:
