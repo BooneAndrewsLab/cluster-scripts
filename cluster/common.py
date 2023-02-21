@@ -27,7 +27,7 @@ class Node:
         self.jobs_node = set(jobs)
 
         self.cpu_all = int(node.get('np', '0'))
-        self.cpu_res = len(jobs)
+        self.cpu_res = int(node.get('np_assigned', len(jobs)))
 
         self.mem_all = int(status.get('physmem', '0kb')[:-2]) / 1024. / 1024.
         self.load = status.get('loadave', '0')
@@ -342,6 +342,7 @@ class Cluster:
                 node_data['np'] = node_data['resources_available']['ncpus']
                 node_data['status'] = '='.join(['physmem', node_data['resources_available']['mem']])
                 node_data['jobs'] = ','.join(node_data.get('jobs', []))
+                node_data['np_assigned'] = node_data['resources_assigned']['ncpus']
                 self.nodes.append(Node(node_data))
 
         self.nodes = sorted(self.nodes, key=lambda n: ('offline' in n.state_set, n.name))
