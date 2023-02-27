@@ -342,7 +342,7 @@ class Cluster:
                 node_data['np'] = node_data['resources_available']['ncpus']
                 node_data['status'] = '='.join(['physmem', node_data['resources_available']['mem']])
                 node_data['jobs'] = ','.join(node_data.get('jobs', []))
-                node_data['np_assigned'] = node_data['resources_assigned']['ncpus']
+                node_data['np_assigned'] = node_data['resources_assigned'].get('ncpus', '0')
                 self.nodes.append(Node(node_data))
 
         self.nodes = sorted(self.nodes, key=lambda n: ('offline' in n.state_set, n.name))
