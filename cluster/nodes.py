@@ -22,7 +22,8 @@ def check_status(args):
             node.name,
             node.states,
             node.load,
-            "%3d/%3d (%3d%%)" % (node.cpu_res, node.cpu_all, 1. * node.cpu_res / node.cpu_all * 100.),  # Cores
+            "%3d/%3d (%3d%%)" % (
+                node.cpu_res, node.cpu_all, 1. * node.cpu_res / node.cpu_all * 100.) if node.cpu_all else 'N/A',  # Cores
             "%5.1f/%5.1fG (%3d%%)" % (
                 node.mem_res, node.mem_all, node.mem_res / node.mem_all * 100.) if node.mem_all else 'N/A',  # Memory
             ''.join(('*' * node.cpu_res) + ('-' * (node.cpu_all - node.cpu_res)))
