@@ -339,8 +339,8 @@ class Cluster:
             nodes_json = json.loads(run_cmd('pbsnodes -a -F json'))
             for node_id, node_data in nodes_json['nodes'].items():
                 node_data['name'] = node_id
-                node_data['np'] = node_data['resources_available']['ncpus']
-                node_data['status'] = '='.join(['physmem', node_data['resources_available']['mem']])
+                node_data['np'] = node_data['resources_available'].get('ncpus', '0')
+                node_data['status'] = '='.join(['physmem', node_data['resources_available'].get('mem', '0kb')])
                 node_data['jobs'] = ','.join(node_data.get('jobs', []))
                 node_data['np_assigned'] = node_data['resources_assigned'].get('ncpus', '0')
                 self.nodes.append(Node(node_data))
