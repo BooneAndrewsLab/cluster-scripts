@@ -205,7 +205,7 @@ class Cluster:
         useful ones are: resources_used.walltime, Resource_List.walltime, resources_used.mem, Resource_List.mem, ...
         This is the JSON parsing version. Should be a bit safer than parsing regular output with RE.
         """
-        job_json = json.loads(cache_cmd('/usr/bin/qstat -f -F json', ignore_cache=not self.cached)).get('Jobs', [])
+        job_json = json.loads(cache_cmd('/usr/bin/qstat -f -F json', ignore_cache=not self.cached)).get('Jobs', {})
 
         for jobid, job in job_json.items():
             job['Job_Id'] = jobid.split('.')[0]
